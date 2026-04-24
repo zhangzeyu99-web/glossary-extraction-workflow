@@ -9,7 +9,7 @@
     "min_hit": 1,
     "glossary_hit_threshold": 1
   },
-  "memory": {
+  "curated_rules": {
     "version": 1,
     "terms": {
       "报名": {
@@ -18,12 +18,7 @@
         "block_en2": false,
         "ignore": false,
         "note": "",
-        "observed_exact_candidates": {},
-        "observed_manual_adaptations": {},
-        "observed_example_usages": {},
-        "seen_runs": 0,
-        "last_seen_at": "",
-        "last_input_digest": ""
+        "category_override": ""
       },
       "升级": {
         "approved_en": "Level Up",
@@ -31,12 +26,7 @@
         "block_en2": false,
         "ignore": false,
         "note": "",
-        "observed_exact_candidates": {},
-        "observed_manual_adaptations": {},
-        "observed_example_usages": {},
-        "seen_runs": 0,
-        "last_seen_at": "",
-        "last_input_digest": ""
+        "category_override": ""
       },
       "奖励": {
         "approved_en": "Reward",
@@ -44,14 +34,13 @@
         "block_en2": true,
         "ignore": false,
         "note": "",
-        "observed_exact_candidates": {},
-        "observed_manual_adaptations": {},
-        "observed_example_usages": {},
-        "seen_runs": 0,
-        "last_seen_at": "",
-        "last_input_digest": ""
+        "category_override": ""
       }
     }
+  },
+  "observations_store": {
+    "version": 1,
+    "terms": {}
   },
   "rows": [
     {

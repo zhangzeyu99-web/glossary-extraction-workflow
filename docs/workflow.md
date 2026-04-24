@@ -76,15 +76,21 @@
 - `Registration` 和 `Sign Up`
   是两套不同译法，应写入 `EN2`
 
-### 5.1 经验库反哺
+### 5.1 规则层与观察层反哺
 
-如果某个术语已经在经验库中被确认：
+如果某个术语已经被人工确认：
 
 - 优先使用 `approved_en`
 - 优先使用 `approved_en2`
 - 如果 `block_en2 = true`，则不再自动派生 `EN2`
 
-这样可以把一次人工判断沉淀为后续自动复用的规则。
+如果某个术语在历史跑表里已经多次出现：
+
+- 合并 `observed_exact_candidates`
+- 合并 `observed_example_usages`
+- 合并 `observed_manual_adaptations`
+
+这样可以把一次人工判断沉淀为规则层，把后续运行的真实观察沉淀为自动学习层。
 
 ### 6. 风险判定
 
@@ -114,10 +120,23 @@
 每次优化提取逻辑后，应使用 harness 跑 fixture：
 
 ```bash
-python scripts/run_glossary_harness.py fixtures/core_regression.json
+python scripts/run_glossary_harness.py \
+  fixtures/core_regression.json \
+  fixtures/observation_feedback_regression.json
 ```
 
 通过后再跑真实语言表。
+
+## 人工确认回灌
+
+人工确认完 `ID / CN / EN / EN2` 交付表后，应尽快回灌到规则层：
+
+```bash
+python scripts/import_curated_glossary.py /path/to/final_glossary.xlsx \
+  --curated-rules data/experience/curated_terms.json
+```
+
+这样下一次跑表时，标准 EN、稳定 EN2 和明确禁止 EN2 的术语都会直接继承。
 
 ## 推荐复核顺序
 

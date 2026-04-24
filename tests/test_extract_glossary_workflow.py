@@ -100,8 +100,8 @@ class UtilityTests(unittest.TestCase):
 
 
 class MemoryTests(unittest.TestCase):
-    def test_memory_preferences_can_block_en2_and_accumulate_counts(self):
-        memory = {
+    def test_preferences_can_block_en2_and_accumulate_observations(self):
+        curated = {
             "version": 1,
             "terms": {
                 "奖励": {
@@ -109,16 +109,11 @@ class MemoryTests(unittest.TestCase):
                     "approved_en2": "",
                     "block_en2": True,
                     "ignore": False,
-                    "note": "",
-                    "observed_exact_candidates": {},
-                    "observed_manual_adaptations": {},
-                    "observed_example_usages": {},
-                    "seen_runs": 0,
-                    "last_seen_at": "",
-                    "last_input_digest": ""
+                    "note": ""
                 }
             },
         }
+        observations = MODULE.new_observation_store()
         records = [
             MODULE.Record("1", "奖励", "Reward"),
             MODULE.Record("2", "奖励补发", "Promo"),
@@ -128,18 +123,19 @@ class MemoryTests(unittest.TestCase):
             records=records,
             min_hit=1,
             glossary_hit_threshold=1,
-            term_memory=memory,
+            curated_rules=curated,
+            observations_store=observations,
             input_digest="fixture-1",
         )
         row = {item["CN"]: item for item in final_rows}["奖励"]
         self.assertEqual(row["EN"], "Reward")
         self.assertEqual(row["EN2"], "")
-        state = memory["terms"]["奖励"]
+        state = observations["terms"]["奖励"]
         self.assertEqual(state["seen_runs"], 1)
         self.assertIn("Reward", state["observed_exact_candidates"])
 
-    def test_memory_preferences_can_override_en_and_en2(self):
-        memory = {
+    def test_curated_rules_can_override_en_and_en2(self):
+        curated = {
             "version": 1,
             "terms": {
                 "报名": {
@@ -147,13 +143,7 @@ class MemoryTests(unittest.TestCase):
                     "approved_en2": "Sign Up",
                     "block_en2": False,
                     "ignore": False,
-                    "note": "",
-                    "observed_exact_candidates": {},
-                    "observed_manual_adaptations": {},
-                    "observed_example_usages": {},
-                    "seen_runs": 0,
-                    "last_seen_at": "",
-                    "last_input_digest": ""
+                    "note": ""
                 }
             },
         }
@@ -165,8 +155,104 @@ class MemoryTests(unittest.TestCase):
             records=records,
             min_hit=1,
             glossary_hit_threshold=1,
-            term_memory=memory,
+            curated_rules=curated,
+            observations_store=MODULE.new_observation_store(),
             input_digest="fixture-2",
+        )
+        row = {item["CN"]: item for item in final_rows}["报名"]
+        self.assertEqual(row["EN"], "Registration")
+        self.assertEqual(row["EN2"], "Sign Up")
+
+    def test_curated_and_observation_stores_roundtrip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            curated = MODULE.new_curated_rules()
+            curated["terms"]["传说"] = {
+                "approved_en": "Legend",
+                "approved_en2": "Legendary",
+                "block_en2": False,
+                "ignore": False,
+                "note": "fixture"
+            }
+            observations = MODULE.new_observation_store()
+            observations["terms"]["传说"] = {
+                "observed_exact_candidates": {"Legend": 2},
+                "observed_example_usages": {"Legendary Hero": 3},
+                "observed_manual_adaptations": {"Legendary": 1},
+                "seen_runs": 2,
+                "last_seen_at": "2026-04-24T00:00:00+00:00",
+                "last_input_digest": "abc"
+            }
+
+            MODULE.save_curated_rules(curated_path, curated)
+            MODULE.save_observation_store(observations_path, observations)
+
+            loaded_curated = MODULE.load_curated_rules(curated_path)
+            loaded_observations = MODULE.load_observation_store(observations_path)
+
+            self.assertEqual(loaded_curated["terms"]["传说"]["approved_en"], "Legend")
+            self.assertEqual(loaded_observations["terms"]["传说"]["seen_runs"], 2)
+
+    def test_legacy_term_memory_can_split_into_two_layers(self):
+        legacy = {
+            "version": 1,
+            "terms": {
+                "报名": {
+                    "approved_en": "Registration",
+                    "approved_en2": "Sign Up",
+                    "block_en2": False,
+                    "ignore": False,
+                    "note": "legacy",
+                    "observed_exact_candidates": {"Registration": 2},
+                    "observed_example_usages": {"Registration Countdown": 1},
+                    "observed_manual_adaptations": {"Sign Up": 1},
+                    "seen_runs": 2,
+                    "last_seen_at": "2026-04-24T00:00:00+00:00",
+                    "last_input_digest": "legacy-digest",
+                }
+            },
+        }
+        curated, observations = MODULE.split_legacy_term_memory(legacy)
+        self.assertEqual(curated["terms"]["报名"]["approved_en"], "Registration")
+        self.assertEqual(observations["terms"]["报名"]["seen_runs"], 2)
+        self.assertIn("Sign Up", observations["terms"]["报名"]["observed_manual_adaptations"])
+
+    def test_observations_can_backfill_en2_when_curated_en2_is_blank(self):
+        curated = {
+            "version": 1,
+            "terms": {
+                "报名": {
+                    "approved_en": "Registration",
+                    "approved_en2": "",
+                    "block_en2": False,
+                    "ignore": False,
+                    "note": ""
+                }
+            },
+        }
+        observations = MODULE.new_observation_store()
+        observations["terms"]["报名"] = {
+            "observed_exact_candidates": {"Registration": 2},
+            "observed_example_usages": {"Registration Countdown": 2},
+            "observed_manual_adaptations": {"Sign Up": 4},
+            "seen_runs": 2,
+            "last_seen_at": "2026-04-24T00:00:00+00:00",
+            "last_input_digest": "legacy-run",
+        }
+        records = [
+            MODULE.Record("1", "报名", "Registration"),
+            MODULE.Record("2", "报名条件", "Registration Requirements"),
+        ]
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=curated,
+            observations_store=observations,
+            input_digest="fixture-3",
         )
         row = {item["CN"]: item for item in final_rows}["报名"]
         self.assertEqual(row["EN"], "Registration")
@@ -174,13 +260,14 @@ class MemoryTests(unittest.TestCase):
 
 
 class CliIntegrationTests(unittest.TestCase):
-    def test_cli_generates_detail_final_and_memory_outputs(self):
+    def test_cli_generates_detail_final_and_store_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             input_path = temp_path / "sample_language_table.xlsx"
             detail_path = temp_path / "detail.xlsx"
             final_path = temp_path / "final.xlsx"
-            memory_path = temp_path / "term_memory.json"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
 
             workbook = Workbook()
             worksheet = workbook.active
@@ -194,7 +281,7 @@ class CliIntegrationTests(unittest.TestCase):
             workbook.save(input_path)
             workbook.close()
 
-            memory_path.write_text(
+            curated_path.write_text(
                 json.dumps(
                     {
                         "version": 1,
@@ -204,26 +291,14 @@ class CliIntegrationTests(unittest.TestCase):
                                 "approved_en2": "Sign Up",
                                 "block_en2": False,
                                 "ignore": False,
-                                "note": "",
-                                "observed_exact_candidates": {},
-                                "observed_manual_adaptations": {},
-                                "observed_example_usages": {},
-                                "seen_runs": 0,
-                                "last_seen_at": "",
-                                "last_input_digest": ""
+                                "note": ""
                             },
                             "升级": {
                                 "approved_en": "Level Up",
                                 "approved_en2": "Upgrade",
                                 "block_en2": False,
                                 "ignore": False,
-                                "note": "",
-                                "observed_exact_candidates": {},
-                                "observed_manual_adaptations": {},
-                                "observed_example_usages": {},
-                                "seen_runs": 0,
-                                "last_seen_at": "",
-                                "last_input_digest": ""
+                                "note": ""
                             }
                         },
                     },
@@ -242,8 +317,10 @@ class CliIntegrationTests(unittest.TestCase):
                     str(detail_path),
                     "--final-output",
                     str(final_path),
-                    "--experience-store",
-                    str(memory_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
                     "--min-hit",
                     "1",
                     "--glossary-hit-threshold",
@@ -258,7 +335,8 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
             self.assertTrue(detail_path.exists())
             self.assertTrue(final_path.exists())
-            self.assertTrue(memory_path.exists())
+            self.assertTrue(curated_path.exists())
+            self.assertTrue(observations_path.exists())
 
             final_workbook = load_workbook(final_path, read_only=True, data_only=True)
             glossary_sheet = final_workbook["Glossary"]

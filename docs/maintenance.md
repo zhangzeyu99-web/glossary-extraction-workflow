@@ -46,7 +46,7 @@
   - `示例扩展但不该算 EN2`
   - `手动适配必须落 EN2`
   - `block_en2` 生效
-  - 经验库覆盖默认启发式
+  - 历史观察可以反哺默认启发式
 - 改动提取规则后，先跑 fixture，再跑完整测试
 
 ## 数据管理要求
@@ -54,6 +54,8 @@
 - 不把客户原始语言表直接提交到仓库
 - 仓库内只放脱敏样例
 - 输出文件默认写到输入文件同目录，不作为仓库产物提交
+- 人工确认结果优先回灌到 `curated_terms.json`
+- 自动观察结果只写入 `observed_terms.json`，不要手工堆历史噪音词
 
 ## 提交规范
 
@@ -80,4 +82,5 @@
 - 清单模板：`templates/maintenance_checklist.md`
 - GitHub issue 模板：`.github/ISSUE_TEMPLATE/glossary-maintenance.md`
 - 回归 fixture：`fixtures/`
-- 经验库：`data/experience/term_memory.json`
+- 人工规则：`data/experience/curated_terms.json`
+- 自动观察：`data/experience/observed_terms.json`

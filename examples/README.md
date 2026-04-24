@@ -28,12 +28,15 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx
 
 - `*_glossary_details_YYYYMMDD.xlsx`
 - `*_ID_CN_EN_EN2_YYYYMMDD.xlsx`
-- `data/experience/term_memory.json` 是否正确积累观察结果
+- `data/experience/curated_terms.json` 是否保留人工确认规则
+- `data/experience/observed_terms.json` 是否正确积累观察结果
 
 ### 4. 运行回归 harness
 
 ```bash
-python scripts/run_glossary_harness.py fixtures/core_regression.json
+python scripts/run_glossary_harness.py \
+  fixtures/core_regression.json \
+  fixtures/observation_feedback_regression.json
 ```
 
 ## 适合做样例的数据类型

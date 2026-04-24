@@ -59,11 +59,12 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --target-column en
 ```
 
-默认会同时读写经验库：
+默认会同时读写两层经验数据：
 
 ```bash
 python scripts/extract_glossary.py /path/to/language_table.xlsx \
-  --experience-store data/experience/term_memory.json
+  --curated-rules data/experience/curated_terms.json \
+  --observations-store data/experience/observed_terms.json
 ```
 
 ### 4. 产物说明
@@ -77,8 +78,25 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 
 同时会更新：
 
-- `data/experience/term_memory.json`
-  自动积累每轮提取观察到的候选、手动适配、命中次数和上次输入指纹
+- `data/experience/curated_terms.json`
+  人工确认层，保存 `approved_en / approved_en2 / block_en2 / note`
+- `data/experience/observed_terms.json`
+  自动观察层，保存历史出现过的候选、手动适配、命中次数和上次输入指纹
+
+### 5. 回灌人工确认结果
+
+当你已经拿到人工确认过的最终交付表，可以直接回灌到人工规则层：
+
+```bash
+python scripts/import_curated_glossary.py /path/to/final_glossary.xlsx \
+  --curated-rules data/experience/curated_terms.json
+```
+
+默认读取 `Glossary` sheet，按 `ID / CN / EN / EN2` 回写规则：
+
+- `EN` 写入 `approved_en`
+- `EN2` 非空时写入 `approved_en2`
+- `EN2` 为空时自动设置 `block_en2 = true`
 
 ## EN 与 EN2 的口径
 
@@ -123,9 +141,12 @@ harness 会检查：
 
 ## 自动积累经验
 
-经验库文件是 [data/experience/term_memory.json](data/experience/term_memory.json)。
+经验层现在拆成两部分：
 
-支持三类信息：
+- [data/experience/curated_terms.json](data/experience/curated_terms.json)
+- [data/experience/observed_terms.json](data/experience/observed_terms.json)
+
+人工确认层支持三类核心信息：
 
 - `approved_en`
   已确认的标准 EN
@@ -134,7 +155,7 @@ harness 会检查：
 - `block_en2`
   明确禁止自动派生 EN2 的术语
 
-每次运行后还会自动累积：
+自动观察层会在每次运行后累积：
 
 - `observed_exact_candidates`
 - `observed_example_usages`
@@ -142,7 +163,7 @@ harness 会检查：
 - `seen_runs`
 - `last_seen_at`
 
-这层经验会反向参与后续提取，减少同一术语在不同版本里来回漂移。
+提取时会先读人工确认层，再把历史观察合并进候选判断，减少同一术语在不同版本里来回漂移。
 
 ## 模板与示例
 
@@ -160,7 +181,9 @@ python -m pytest
 额外建议每次大改后再跑一遍 harness：
 
 ```bash
-python scripts/run_glossary_harness.py fixtures/core_regression.json
+python scripts/run_glossary_harness.py \
+  fixtures/core_regression.json \
+  fixtures/observation_feedback_regression.json
 ```
 
 当前仓库默认提供本地测试命令；如后续账号具备 `workflow` 权限，可再补 GitHub Actions。

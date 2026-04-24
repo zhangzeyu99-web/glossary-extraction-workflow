@@ -38,9 +38,16 @@ def evaluate_fixture(fixture_path: Path) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_root = Path(temp_dir)
         workbook_path = temp_root / "fixture.xlsx"
-        memory_path = temp_root / "memory.json"
+        curated_path = temp_root / "curated.json"
+        observations_path = temp_root / "observations.json"
         write_fixture_workbook(workbook_path, fixture)
-        extractor.save_term_memory(memory_path, fixture.get("memory", extractor.new_term_memory()))
+        curated_rules = fixture.get("curated_rules")
+        observations_store = fixture.get("observations_store")
+        legacy_memory = fixture.get("memory")
+        if legacy_memory and (curated_rules is None and observations_store is None):
+            curated_rules, observations_store = extractor.split_legacy_term_memory(legacy_memory)
+        extractor.save_curated_rules(curated_path, curated_rules or extractor.new_curated_rules())
+        extractor.save_observation_store(observations_path, observations_store or extractor.new_observation_store())
 
         records, _sheet_name = extractor.load_records(
             input_path=workbook_path,
@@ -49,12 +56,14 @@ def evaluate_fixture(fixture_path: Path) -> dict[str, Any]:
             source_column=columns["source"],
             target_column=columns["target"],
         )
-        memory = extractor.load_term_memory(memory_path)
+        curated = extractor.load_curated_rules(curated_path)
+        observations = extractor.load_observation_store(observations_path)
         _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = extractor.build_term_rows(
             records=records,
             min_hit=int(extract_config.get("min_hit", 1)),
             glossary_hit_threshold=int(extract_config.get("glossary_hit_threshold", 1)),
-            term_memory=memory,
+            curated_rules=curated,
+            observations_store=observations,
             input_digest=extractor.file_digest(workbook_path),
         )
 
