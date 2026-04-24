@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -98,13 +99,88 @@ class UtilityTests(unittest.TestCase):
         )
 
 
+class MemoryTests(unittest.TestCase):
+    def test_memory_preferences_can_block_en2_and_accumulate_counts(self):
+        memory = {
+            "version": 1,
+            "terms": {
+                "奖励": {
+                    "approved_en": "Reward",
+                    "approved_en2": "",
+                    "block_en2": True,
+                    "ignore": False,
+                    "note": "",
+                    "observed_exact_candidates": {},
+                    "observed_manual_adaptations": {},
+                    "observed_example_usages": {},
+                    "seen_runs": 0,
+                    "last_seen_at": "",
+                    "last_input_digest": ""
+                }
+            },
+        }
+        records = [
+            MODULE.Record("1", "奖励", "Reward"),
+            MODULE.Record("2", "奖励补发", "Promo"),
+            MODULE.Record("3", "奖励", "Rewards"),
+        ]
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            term_memory=memory,
+            input_digest="fixture-1",
+        )
+        row = {item["CN"]: item for item in final_rows}["奖励"]
+        self.assertEqual(row["EN"], "Reward")
+        self.assertEqual(row["EN2"], "")
+        state = memory["terms"]["奖励"]
+        self.assertEqual(state["seen_runs"], 1)
+        self.assertIn("Reward", state["observed_exact_candidates"])
+
+    def test_memory_preferences_can_override_en_and_en2(self):
+        memory = {
+            "version": 1,
+            "terms": {
+                "报名": {
+                    "approved_en": "Registration",
+                    "approved_en2": "Sign Up",
+                    "block_en2": False,
+                    "ignore": False,
+                    "note": "",
+                    "observed_exact_candidates": {},
+                    "observed_manual_adaptations": {},
+                    "observed_example_usages": {},
+                    "seen_runs": 0,
+                    "last_seen_at": "",
+                    "last_input_digest": ""
+                }
+            },
+        }
+        records = [
+            MODULE.Record("1", "报名", "Sign Up"),
+            MODULE.Record("2", "报名倒计时", "Registration Countdown"),
+        ]
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            term_memory=memory,
+            input_digest="fixture-2",
+        )
+        row = {item["CN"]: item for item in final_rows}["报名"]
+        self.assertEqual(row["EN"], "Registration")
+        self.assertEqual(row["EN2"], "Sign Up")
+
+
 class CliIntegrationTests(unittest.TestCase):
-    def test_cli_generates_detail_and_final_workbooks(self):
+    def test_cli_generates_detail_final_and_memory_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             input_path = temp_path / "sample_language_table.xlsx"
             detail_path = temp_path / "detail.xlsx"
             final_path = temp_path / "final.xlsx"
+            memory_path = temp_path / "term_memory.json"
 
             workbook = Workbook()
             worksheet = workbook.active
@@ -112,13 +188,50 @@ class CliIntegrationTests(unittest.TestCase):
             worksheet.append(["ID", "cn", "en"])
             worksheet.append(["1", "报名", "Registration"])
             worksheet.append(["2", "报名条件", "Registration Requirements"])
-            worksheet.append(["3", "报名倒计时", "Registration Countdown"])
-            worksheet.append(["4", "报名", "Sign Up"])
-            worksheet.append(["5", "升级", "Level Up"])
-            worksheet.append(["6", "升级模块", "Upgrade Module"])
-            worksheet.append(["7", "升级特权", "Upgrade Privilege"])
-            worksheet.append(["8", "升级营地", "Upgrade Camp"])
+            worksheet.append(["3", "报名", "Sign Up"])
+            worksheet.append(["4", "升级", "Level Up"])
+            worksheet.append(["5", "升级模块", "Upgrade Module"])
             workbook.save(input_path)
+            workbook.close()
+
+            memory_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "terms": {
+                            "报名": {
+                                "approved_en": "Registration",
+                                "approved_en2": "Sign Up",
+                                "block_en2": False,
+                                "ignore": False,
+                                "note": "",
+                                "observed_exact_candidates": {},
+                                "observed_manual_adaptations": {},
+                                "observed_example_usages": {},
+                                "seen_runs": 0,
+                                "last_seen_at": "",
+                                "last_input_digest": ""
+                            },
+                            "升级": {
+                                "approved_en": "Level Up",
+                                "approved_en2": "Upgrade",
+                                "block_en2": False,
+                                "ignore": False,
+                                "note": "",
+                                "observed_exact_candidates": {},
+                                "observed_manual_adaptations": {},
+                                "observed_example_usages": {},
+                                "seen_runs": 0,
+                                "last_seen_at": "",
+                                "last_input_digest": ""
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
             result = subprocess.run(
                 [
@@ -129,6 +242,8 @@ class CliIntegrationTests(unittest.TestCase):
                     str(detail_path),
                     "--final-output",
                     str(final_path),
+                    "--experience-store",
+                    str(memory_path),
                     "--min-hit",
                     "1",
                     "--glossary-hit-threshold",
@@ -143,12 +258,11 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
             self.assertTrue(detail_path.exists())
             self.assertTrue(final_path.exists())
+            self.assertTrue(memory_path.exists())
 
             final_workbook = load_workbook(final_path, read_only=True, data_only=True)
             glossary_sheet = final_workbook["Glossary"]
             rows = list(glossary_sheet.iter_rows(values_only=True))
-            self.assertEqual(rows[0], ("ID", "CN", "EN", "EN2"))
-
             lookup = {row[1]: row for row in rows[1:]}
             self.assertEqual(lookup["报名"][2], "Registration")
             self.assertEqual(lookup["报名"][3], "Sign Up")

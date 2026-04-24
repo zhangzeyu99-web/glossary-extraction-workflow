@@ -76,6 +76,16 @@
 - `Registration` 和 `Sign Up`
   是两套不同译法，应写入 `EN2`
 
+### 5.1 经验库反哺
+
+如果某个术语已经在经验库中被确认：
+
+- 优先使用 `approved_en`
+- 优先使用 `approved_en2`
+- 如果 `block_en2 = true`，则不再自动派生 `EN2`
+
+这样可以把一次人工判断沉淀为后续自动复用的规则。
+
 ### 6. 风险判定
 
 以下情况优先列为高风险：
@@ -98,6 +108,16 @@
 
 - `EN` 是标准示例译法
 - `EN2` 只在替代译法稳定成立时填写，否则留空
+
+## 自动回归
+
+每次优化提取逻辑后，应使用 harness 跑 fixture：
+
+```bash
+python scripts/run_glossary_harness.py fixtures/core_regression.json
+```
+
+通过后再跑真实语言表。
 
 ## 推荐复核顺序
 

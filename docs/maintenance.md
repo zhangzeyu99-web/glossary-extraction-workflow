@@ -9,6 +9,7 @@
 ### 每次新版本语言表进入时
 
 - 跑一次提取脚本
+- 提交前跑一次 harness
 - 对新增的高风险词做人工复核
 - 检查 `EN2` 是否出现新的稳定适配用法
 
@@ -23,6 +24,7 @@
 - 回顾风险词规则
 - 更新样例数据
 - 跑全量测试
+- 刷新 fixture 基线
 - 检查 issue 模板和维护清单是否还适用
 
 ## 回归检查清单
@@ -36,6 +38,16 @@
 - `普通 / Ordinary / Normal`
 
 如果这些高风险对照在新一轮提取里出现漂移，优先处理。
+
+## Harness 维护规则
+
+- 每新增一种典型漂移场景，就补一条 fixture
+- fixture 应覆盖：
+  - `示例扩展但不该算 EN2`
+  - `手动适配必须落 EN2`
+  - `block_en2` 生效
+  - 经验库覆盖默认启发式
+- 改动提取规则后，先跑 fixture，再跑完整测试
 
 ## 数据管理要求
 
@@ -67,3 +79,5 @@
 - 常规维护：`docs/maintenance.md`
 - 清单模板：`templates/maintenance_checklist.md`
 - GitHub issue 模板：`.github/ISSUE_TEMPLATE/glossary-maintenance.md`
+- 回归 fixture：`fixtures/`
+- 经验库：`data/experience/term_memory.json`

@@ -59,6 +59,13 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --target-column en
 ```
 
+默认会同时读写经验库：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --experience-store data/experience/term_memory.json
+```
+
 ### 4. 产物说明
 
 脚本默认在输入文件同目录输出两份 Excel：
@@ -67,6 +74,11 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   工作明细版，包含候选术语、风险、示例用法、手动适配、差异说明
 - `*_ID_CN_EN_EN2_YYYYMMDD.xlsx`
   干净交付版，只保留 `ID / CN / EN / EN2`
+
+同时会更新：
+
+- `data/experience/term_memory.json`
+  自动积累每轮提取观察到的候选、手动适配、命中次数和上次输入指纹
 
 ## EN 与 EN2 的口径
 
@@ -87,6 +99,51 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 - [docs/workflow.md](docs/workflow.md)：完整提炼流程
 - [docs/maintenance.md](docs/maintenance.md)：维护与回归规范
 
+## Harness 回归
+
+仓库内置 fixture 驱动的 harness，用来做回归验证：
+
+```bash
+python scripts/run_glossary_harness.py fixtures/core_regression.json
+```
+
+可选输出 JSON 报告：
+
+```bash
+python scripts/run_glossary_harness.py fixtures/core_regression.json \
+  --report-output output/harness-report.json
+```
+
+harness 会检查：
+
+- 预期术语是否被提取
+- `EN / EN2` 是否命中
+- 不应进入术语表的词是否被误提
+- 当前输出是否和历史基线漂移
+
+## 自动积累经验
+
+经验库文件是 [data/experience/term_memory.json](data/experience/term_memory.json)。
+
+支持三类信息：
+
+- `approved_en`
+  已确认的标准 EN
+- `approved_en2`
+  已确认的手动适配 EN2
+- `block_en2`
+  明确禁止自动派生 EN2 的术语
+
+每次运行后还会自动累积：
+
+- `observed_exact_candidates`
+- `observed_example_usages`
+- `observed_manual_adaptations`
+- `seen_runs`
+- `last_seen_at`
+
+这层经验会反向参与后续提取，减少同一术语在不同版本里来回漂移。
+
 ## 模板与示例
 
 - [templates/final_glossary_headers.tsv](templates/final_glossary_headers.tsv)
@@ -98,6 +155,12 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 
 ```bash
 python -m pytest
+```
+
+额外建议每次大改后再跑一遍 harness：
+
+```bash
+python scripts/run_glossary_harness.py fixtures/core_regression.json
 ```
 
 当前仓库默认提供本地测试命令；如后续账号具备 `workflow` 权限，可再补 GitHub Actions。

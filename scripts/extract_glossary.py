@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
+import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_EXPERIENCE_STORE = REPO_ROOT / "data" / "experience" / "term_memory.json"
+MEMORY_VERSION = 1
 
 SENTENCE_PUNCT_RE = re.compile(r"[，。！？；：,.!?;:\n]")
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -384,6 +391,154 @@ def note_for(
     return "; ".join(notes)
 
 
+def counter_to_dict(counter: Counter[str]) -> dict[str, int]:
+    return {key: int(value) for key, value in sorted(counter.items()) if key}
+
+
+def dict_to_counter(value: dict[str, Any] | None) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    if not value:
+        return counter
+    for key, raw in value.items():
+        try:
+            count = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if key and count > 0:
+            counter[key] = count
+    return counter
+
+
+def merge_counters(*counters: Counter[str]) -> Counter[str]:
+    merged: Counter[str] = Counter()
+    for counter in counters:
+        merged.update(counter)
+    return merged
+
+
+def new_term_memory() -> dict[str, Any]:
+    return {"version": MEMORY_VERSION, "terms": {}}
+
+
+def load_term_memory(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return new_term_memory()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return new_term_memory()
+    if "terms" not in data or not isinstance(data["terms"], dict):
+        data["terms"] = {}
+    data.setdefault("version", MEMORY_VERSION)
+    return data
+
+
+def save_term_memory(path: Path | None, memory: dict[str, Any]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_term_state(memory: dict[str, Any], term: str) -> dict[str, Any]:
+    terms = memory.setdefault("terms", {})
+    state = terms.setdefault(term, {})
+    state.setdefault("approved_en", "")
+    state.setdefault("approved_en2", "")
+    state.setdefault("block_en2", False)
+    state.setdefault("ignore", False)
+    state.setdefault("note", "")
+    state.setdefault("observed_exact_candidates", {})
+    state.setdefault("observed_manual_adaptations", {})
+    state.setdefault("observed_example_usages", {})
+    state.setdefault("seen_runs", 0)
+    state.setdefault("last_seen_at", "")
+    state.setdefault("last_input_digest", "")
+    return state
+
+
+def apply_memory_preferences(
+    term_state: dict[str, Any],
+    term: str,
+    suggested_en: str,
+    example_en: str,
+    en2_value: str,
+    exact_translation_counter: Counter[str],
+    example_usage_counter: Counter[str],
+    manual_adaptation_counter: Counter[str],
+) -> tuple[str, str, str, Counter[str], Counter[str], Counter[str]]:
+    historical_exact = dict_to_counter(term_state.get("observed_exact_candidates"))
+    historical_examples = dict_to_counter(term_state.get("observed_example_usages"))
+    historical_manual = dict_to_counter(term_state.get("observed_manual_adaptations"))
+
+    exact_translation_counter = merge_counters(exact_translation_counter, historical_exact)
+    example_usage_counter = merge_counters(example_usage_counter, historical_examples)
+    manual_adaptation_counter = merge_counters(manual_adaptation_counter, historical_manual)
+
+    approved_en = clean_text(term_state.get("approved_en"))
+    approved_en2 = clean_text(term_state.get("approved_en2"))
+    block_en2 = bool(term_state.get("block_en2"))
+
+    if approved_en:
+        suggested_en = approved_en
+        example_en = approved_en
+    elif not example_en and exact_translation_counter:
+        example_en = exact_translation_counter.most_common(1)[0][0]
+        suggested_en = example_en
+
+    if approved_en2:
+        en2_value = approved_en2
+    elif block_en2:
+        en2_value = ""
+    elif not en2_value and manual_adaptation_counter:
+        en2_value = choose_en2_value(
+            example_en=example_en,
+            exact_diff_counter=Counter(),
+            manual_counter=manual_adaptation_counter,
+        )
+
+    if term_state.get("ignore") and term not in HIGH_CONFUSION_TERMS:
+        return "", "", "", Counter(), Counter(), Counter()
+    return suggested_en, example_en, en2_value, exact_translation_counter, example_usage_counter, manual_adaptation_counter
+
+
+def update_term_memory(
+    term_state: dict[str, Any],
+    *,
+    input_digest: str,
+    exact_translation_counter: Counter[str],
+    example_usage_counter: Counter[str],
+    manual_adaptation_counter: Counter[str],
+) -> None:
+    if term_state.get("last_input_digest") == input_digest:
+        term_state["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+        return
+
+    observed_exact = dict_to_counter(term_state.get("observed_exact_candidates"))
+    observed_example = dict_to_counter(term_state.get("observed_example_usages"))
+    observed_manual = dict_to_counter(term_state.get("observed_manual_adaptations"))
+    observed_exact.update(exact_translation_counter)
+    observed_example.update(example_usage_counter)
+    observed_manual.update(manual_adaptation_counter)
+
+    term_state["observed_exact_candidates"] = counter_to_dict(observed_exact)
+    term_state["observed_example_usages"] = counter_to_dict(observed_example)
+    term_state["observed_manual_adaptations"] = counter_to_dict(observed_manual)
+    term_state["seen_runs"] = int(term_state.get("seen_runs", 0)) + 1
+    term_state["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+    term_state["last_input_digest"] = input_digest
+
+
+def file_digest(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def set_widths(worksheet) -> None:
     for column_cells in worksheet.columns:
         letter = get_column_letter(column_cells[0].column)
@@ -442,6 +597,7 @@ def load_records(
         if not source:
             continue
         records.append(Record(row_id=row_id, source=source, target=target))
+    workbook.close()
     return records, worksheet.title
 
 
@@ -449,7 +605,10 @@ def build_term_rows(
     records: list[Record],
     min_hit: int,
     glossary_hit_threshold: int,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    term_memory: dict[str, Any] | None = None,
+    input_digest: str = "",
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    term_memory = term_memory if term_memory is not None else new_term_memory()
     label_counter: Counter[str] = Counter()
     label_translations: dict[str, Counter[str]] = defaultdict(Counter)
 
@@ -460,7 +619,7 @@ def build_term_rows(
                 label_translations[record.source][record.target] += 1
 
     rows_by_term: list[dict[str, object]] = []
-    for term in set(label_counter):
+    for term in sorted(set(label_counter)):
         hits = 0
         example_record: Record | None = None
         near_translations: Counter[str] = Counter()
@@ -477,8 +636,9 @@ def build_term_rows(
             continue
 
         exact_translations = label_translations.get(term, Counter())
-        translation_counter = exact_translations if exact_translations else near_translations
-        suggested_en = translation_counter.most_common(1)[0][0] if translation_counter else ""
+        suggested_en = exact_translations.most_common(1)[0][0] if exact_translations else (
+            near_translations.most_common(1)[0][0] if near_translations else ""
+        )
         example_en = example_record.target if example_record and example_record.target else suggested_en
 
         actual_short_counter: Counter[str] = Counter()
@@ -504,21 +664,61 @@ def build_term_rows(
                 if not is_same_or_extended_usage(example_en=example_en, actual_en=text)
             }
         )
-        diff_info = collect_translation_diff(example_en=example_en, actual_counter=actual_short_counter)
         en2_value = choose_en2_value(
             example_en=example_en,
             exact_diff_counter=exact_diff_counter,
             manual_counter=manual_adaptation_counter,
         )
 
-        risk = risk_for(term, len(translation_counter), hits, suggested_en)
+        term_state = get_term_state(term_memory, term)
+        suggested_en, example_en, en2_value, exact_translations, example_usage_counter, manual_adaptation_counter = apply_memory_preferences(
+            term_state=term_state,
+            term=term,
+            suggested_en=suggested_en,
+            example_en=example_en,
+            en2_value=en2_value,
+            exact_translation_counter=exact_translations,
+            example_usage_counter=example_usage_counter,
+            manual_adaptation_counter=manual_adaptation_counter,
+        )
+        if not suggested_en and exact_translations:
+            suggested_en = exact_translations.most_common(1)[0][0]
+        if not example_en:
+            example_en = suggested_en
+        if not suggested_en:
+            suggested_en = example_en
+        if not example_en and exact_translations:
+            example_en = exact_translations.most_common(1)[0][0]
+
+        update_term_memory(
+            term_state,
+            input_digest=input_digest,
+            exact_translation_counter=exact_translations,
+            example_usage_counter=example_usage_counter,
+            manual_adaptation_counter=manual_adaptation_counter,
+        )
+
+        diff_info = collect_translation_diff(example_en=example_en, actual_counter=actual_short_counter)
+        risk = risk_for(term, len(exact_translations or near_translations), hits, suggested_en)
+        category = clean_text(term_state.get("category_override")) or category_for(term)
+        note = note_for(
+            term=term,
+            variants=len(exact_translations or near_translations),
+            exact_hits=label_counter[term],
+            hits=hits,
+            suggested_en=suggested_en,
+            has_actual_diff=diff_info["has_diff"] == "Yes",
+        )
+        if clean_text(term_state.get("note")):
+            note = f"{note}; {clean_text(term_state.get('note'))}" if note else clean_text(term_state.get("note"))
+
         row = {
             "ID": example_record.row_id if example_record else "",
             "CN": term,
             "EN": example_en,
             "EN2": en2_value,
             "SuggestedEN": suggested_en,
-            "ExactCandidates": join_counter(translation_counter),
+            "ExactCandidates": join_counter(exact_translations or near_translations),
             "ExampleUsages": join_counter(example_usage_counter, limit=8),
             "ManualAdaptations": join_counter(manual_adaptation_counter, limit=8),
             "ActualShortUsages": join_counter(actual_short_counter, limit=8),
@@ -527,7 +727,7 @@ def build_term_rows(
             "DiffVariants": diff_info["diff_variants"],
             "SameOrFormatOnlyCount": diff_info["same_or_format_only_count"],
             "DiffCount": diff_info["diff_count"],
-            "Category": category_for(term),
+            "Category": category,
             "Risk": risk,
             "Priority": priority_for(risk, hits),
             "HitRows": hits,
@@ -538,16 +738,10 @@ def build_term_rows(
             "DiffExampleID": diff_sample.row_id if diff_sample else "",
             "DiffExampleSource": diff_sample.source if diff_sample else "",
             "DiffExampleEN": diff_sample.target if diff_sample else "",
-            "Note": note_for(
-                term=term,
-                variants=len(translation_counter),
-                exact_hits=label_counter[term],
-                hits=hits,
-                suggested_en=suggested_en,
-                has_actual_diff=diff_info["has_diff"] == "Yes",
-            ),
+            "Note": note,
         }
-        rows_by_term.append(row)
+        if not term_state.get("ignore"):
+            rows_by_term.append(row)
 
     rows_by_term.sort(
         key=lambda row: (
@@ -582,6 +776,7 @@ def write_detail_workbook(
     glossary_rows: list[dict[str, object]],
     high_risk_rows: list[dict[str, object]],
     manual_rows: list[dict[str, object]],
+    experience_store_path: Path | None,
 ) -> None:
     workbook = Workbook()
     headers = [
@@ -635,6 +830,7 @@ def write_detail_workbook(
         ("GlossaryRows", len(glossary_rows)),
         ("HighRiskRows", len(high_risk_rows)),
         ("ManualAdaptationRows", len(manual_rows)),
+        ("ExperienceStore", str(experience_store_path) if experience_store_path else ""),
         ("Rule", "Extract short source terms from the source column and use target column only for English alignment and drift checks."),
         ("ManualAdaptation", "A term is marked as manual adaptation when short target usages introduce a stable wording different from the example EN."),
     ]:
@@ -643,6 +839,7 @@ def write_detail_workbook(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
+    workbook.close()
 
 
 def write_final_workbook(output_path: Path, final_rows: list[dict[str, object]]) -> None:
@@ -667,7 +864,7 @@ def write_final_workbook(output_path: Path, final_rows: list[dict[str, object]])
     notes_sheet.append(["Item", "Value"])
     for item, value in [
         ("Columns", "ID = text id, CN = source term, EN = example English, EN2 = manual adaptation English"),
-        ("Rule", "EN2 remains blank when the alternative wording is not stable enough."),
+        ("Rule", "EN2 remains blank when the alternative wording is not stable enough or is explicitly blocked by memory."),
         ("RowCount", len(final_rows)),
     ]:
         notes_sheet.append([item, value])
@@ -675,6 +872,7 @@ def write_final_workbook(output_path: Path, final_rows: list[dict[str, object]])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
+    workbook.close()
 
 
 def default_output_paths(input_path: Path, detail_output: str | None, final_output: str | None) -> tuple[Path, Path]:
@@ -704,6 +902,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output", help="Path for the detailed workbook output.")
     parser.add_argument("--final-output", help="Path for the clean delivery workbook output.")
+    parser.add_argument(
+        "--experience-store",
+        default=str(DEFAULT_EXPERIENCE_STORE),
+        help="Path to the term memory JSON file. Default: data/experience/term_memory.json",
+    )
+    parser.add_argument(
+        "--no-experience-store",
+        action="store_true",
+        help="Disable loading and saving the experience store for this run.",
+    )
     return parser
 
 
@@ -715,6 +923,9 @@ def main(argv: list[str] | None = None) -> int:
         detail_output=args.output,
         final_output=args.final_output,
     )
+    experience_store_path = None if args.no_experience_store else Path(args.experience_store)
+    term_memory = load_term_memory(experience_store_path)
+    digest = file_digest(input_path)
 
     records, sheet_name = load_records(
         input_path=input_path,
@@ -727,6 +938,8 @@ def main(argv: list[str] | None = None) -> int:
         records=records,
         min_hit=args.min_hit,
         glossary_hit_threshold=args.glossary_hit_threshold,
+        term_memory=term_memory,
+        input_digest=digest,
     )
 
     write_detail_workbook(
@@ -737,12 +950,15 @@ def main(argv: list[str] | None = None) -> int:
         glossary_rows=glossary_rows,
         high_risk_rows=high_risk_rows,
         manual_rows=manual_rows,
+        experience_store_path=experience_store_path,
     )
     write_final_workbook(output_path=final_output_path, final_rows=final_rows)
+    save_term_memory(experience_store_path, term_memory)
 
     print(f"INPUT={input_path}")
     print(f"DETAIL_OUTPUT={detail_output_path}")
     print(f"FINAL_OUTPUT={final_output_path}")
+    print(f"EXPERIENCE_STORE={experience_store_path or 'disabled'}")
     print(f"SHEET={sheet_name}")
     print(f"RECORDS={len(records)}")
     print(f"CANDIDATES={len(all_rows)}")
