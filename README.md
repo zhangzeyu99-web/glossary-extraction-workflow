@@ -100,7 +100,7 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 python -m pytest
 ```
 
-仓库内置 GitHub Actions，推送和 PR 时会自动跑测试。
+当前仓库默认提供本地测试命令；如后续账号具备 `workflow` 权限，可再补 GitHub Actions。
 
 ## 维护建议
 
