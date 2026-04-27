@@ -1,4 +1,21 @@
-# 术语提取工作流
+# Glossary Extraction Workflow
+
+> Game localization glossary extraction workflow for Excel language tables, bilingual term review, and delivery-ready `ID / CN / EN / EN2` exports.
+
+这是一个面向**游戏出海本地化团队**的术语提取仓库，用于从完整语言表中提取高频、易混淆、需要统一维护的术语，并生成交付版 `ID / CN / EN / EN2` 术语表。
+
+**Keywords:** glossary extraction, game localization glossary, terminology workflow, Excel language table, translation glossary, EN EN2 mapping, localization term management, game translation operations.
+
+## Why This Project Exists
+
+Localization teams often store useful term decisions inside huge language tables, chat threads, or ad hoc spreadsheets. This project turns that mess into a repeatable workflow that:
+
+- extracts high-value terms from full language tables
+- separates standard examples from manual adaptations
+- preserves reusable review knowledge across versions
+- produces delivery-ready glossary files for translators, LQA, and terminology owners
+
+## 中文简介
 
 面向游戏出海本地化团队的可复用仓库，用于从完整语言表中提取高频、易混淆、需要统一维护的术语，并生成交付版 `ID / CN / EN / EN2` 术语表。
 
