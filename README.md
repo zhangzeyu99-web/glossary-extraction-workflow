@@ -2,6 +2,8 @@
 
 > Game localization glossary extraction workflow for Excel language tables, bilingual term review, and delivery-ready `ID / CN / EN / EN2` exports.
 
+![Glossary Extraction Workflow cover](docs/assets/glossary-extraction-cover.svg)
+
 这是一个面向**游戏出海本地化团队**的术语提取仓库，用于从完整语言表中提取高频、易混淆、需要统一维护的术语，并生成交付版 `ID / CN / EN / EN2` 术语表。
 
 **Keywords:** glossary extraction, game localization glossary, terminology workflow, Excel language table, translation glossary, EN EN2 mapping, localization term management, game translation operations.
@@ -18,6 +20,22 @@ Localization teams often store useful term decisions inside huge language tables
 ## 中文简介
 
 面向游戏出海本地化团队的可复用仓库，用于从完整语言表中提取高频、易混淆、需要统一维护的术语，并生成交付版 `ID / CN / EN / EN2` 术语表。
+
+## 30-Second Example
+
+```bash
+git clone https://github.com/zhangzeyu99-web/glossary-extraction-workflow.git
+cd glossary-extraction-workflow
+python -m pip install -r requirements.txt
+python scripts/run_glossary_harness.py fixtures/core_regression.json
+```
+
+## English Sample Input and Output
+
+![English glossary output preview](docs/assets/english-glossary-output-preview.svg)
+
+- [English sample input CSV](examples/english-sample-input.csv)
+- [English sample glossary output](examples/english-sample-output.md)
 
 ## 仓库目标
 
