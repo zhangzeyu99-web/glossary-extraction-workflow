@@ -94,6 +94,16 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --target-column en
 ```
 
+如果当前只有中文源文、没有英文译文列，可以使用源文-only 模式：
+
+```bash
+python scripts/extract_glossary.py /path/to/source_table.xlsx \
+  --source-only \
+  --include-empty-final-terms
+```
+
+这种模式仍输出 `ID / CN / EN / EN2`，其中 `EN / EN2` 会先留空，或由 `curated_terms.json` 中已有人工规则自动补上。
+
 默认会同时读写两层经验数据：
 
 ```bash

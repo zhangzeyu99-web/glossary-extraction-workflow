@@ -513,15 +513,41 @@ def legacy_experience_candidate(path: Path | None) -> Path | None:
     return None
 
 
-def get_curated_term_state(curated_rules: dict[str, Any], term: str) -> dict[str, Any]:
+def default_curated_term_state() -> dict[str, Any]:
+    return {
+        "approved_en": "",
+        "approved_en2": "",
+        "block_en2": False,
+        "ignore": False,
+        "note": "",
+        "category_override": "",
+    }
+
+
+def get_curated_term_state(curated_rules: dict[str, Any], term: str, *, create: bool = True) -> dict[str, Any]:
     terms = curated_rules.setdefault("terms", {})
-    state = terms.setdefault(term, {})
-    state.setdefault("approved_en", "")
-    state.setdefault("approved_en2", "")
-    state.setdefault("block_en2", False)
-    state.setdefault("ignore", False)
-    state.setdefault("note", "")
-    state.setdefault("category_override", "")
+    if create:
+        state = terms.setdefault(term, {})
+    else:
+        state = terms.get(term, {})
+        if not isinstance(state, dict):
+            state = {}
+    defaults = default_curated_term_state()
+    if create:
+        for key, value in defaults.items():
+            state.setdefault(key, value)
+        return state
+    defaults.update(
+        {
+            "approved_en": clean_text(state.get("approved_en")),
+            "approved_en2": clean_text(state.get("approved_en2")),
+            "block_en2": bool(state.get("block_en2")),
+            "ignore": bool(state.get("ignore")),
+            "note": clean_text(state.get("note")),
+            "category_override": clean_text(state.get("category_override")),
+        }
+    )
+    state = defaults
     return state
 
 
@@ -772,6 +798,7 @@ def load_records(
     id_column: str,
     source_column: str,
     target_column: str,
+    source_only: bool = False,
 ) -> tuple[list[Record], str]:
     workbook = load_workbook(input_path, read_only=True, data_only=True)
     worksheet = workbook[sheet_name] if sheet_name else workbook[workbook.sheetnames[0]]
@@ -780,13 +807,13 @@ def load_records(
     headers = list(next(rows))
     id_index = resolve_column_index(headers, id_column)
     source_index = resolve_column_index(headers, source_column)
-    target_index = resolve_column_index(headers, target_column)
+    target_index = None if source_only else resolve_column_index(headers, target_column)
 
     records: list[Record] = []
     for row in rows:
         row_id = "" if row[id_index] is None else str(row[id_index])
         source = clean_text(row[source_index])
-        target = clean_text(row[target_index])
+        target = "" if target_index is None else clean_text(row[target_index])
         if not source:
             continue
         records.append(Record(row_id=row_id, source=source, target=target))
@@ -801,6 +828,7 @@ def build_term_rows(
     curated_rules: dict[str, Any] | None = None,
     observations_store: dict[str, Any] | None = None,
     input_digest: str = "",
+    include_empty_final_terms: bool = False,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     curated_rules = curated_rules if curated_rules is not None else new_curated_rules()
     observations_store = observations_store if observations_store is not None else new_observation_store()
@@ -865,7 +893,7 @@ def build_term_rows(
             manual_counter=manual_adaptation_counter,
         )
 
-        curated_state = get_curated_term_state(curated_rules, term)
+        curated_state = get_curated_term_state(curated_rules, term, create=False)
         observation_state = get_observation_term_state(observations_store, term)
         exact_translations, example_usage_counter, manual_adaptation_counter = apply_observation_history(
             observation_state=observation_state,
@@ -959,7 +987,9 @@ def build_term_rows(
     ]
     high_risk_rows = [row for row in rows_by_term if row["Risk"] == "high"]
     manual_rows = [row for row in rows_by_term if row["HasActualDiff"] == "Yes"]
-    final_rows = [row for row in glossary_rows if row["EN"] or row["EN2"]]
+    final_rows = list(glossary_rows) if include_empty_final_terms else [
+        row for row in glossary_rows if row["EN"] or row["EN2"]
+    ]
     return rows_by_term, glossary_rows, high_risk_rows, manual_rows, final_rows
 
 
@@ -1098,6 +1128,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--id-column", default="ID", help="ID column header. Default: ID")
     parser.add_argument("--source-column", default="cn", help="Source text column header. Default: cn")
     parser.add_argument("--target-column", default="en", help="Target text column header. Default: en")
+    parser.add_argument(
+        "--source-only",
+        action="store_true",
+        help="Treat the input as source text only and do not require a target text column.",
+    )
+    parser.add_argument(
+        "--include-empty-final-terms",
+        action="store_true",
+        help="Keep final glossary rows even when EN and EN2 are blank. Useful for source-only extraction.",
+    )
     parser.add_argument("--min-hit", type=int, default=5, help="Minimum hit count to keep a candidate. Default: 5")
     parser.add_argument(
         "--glossary-hit-threshold",
@@ -1140,6 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
         id_column=args.id_column,
         source_column=args.source_column,
         target_column=args.target_column,
+        source_only=args.source_only,
     )
     all_rows, glossary_rows, high_risk_rows, manual_rows, final_rows = build_term_rows(
         records=records,
@@ -1148,6 +1189,7 @@ def main(argv: list[str] | None = None) -> int:
         curated_rules=curated_rules,
         observations_store=observations_store,
         input_digest=digest,
+        include_empty_final_terms=args.include_empty_final_terms,
     )
 
     write_detail_workbook(

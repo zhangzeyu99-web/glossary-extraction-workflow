@@ -258,8 +258,78 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(row["EN"], "Registration")
         self.assertEqual(row["EN2"], "Sign Up")
 
+    def test_build_term_rows_does_not_add_empty_curated_rules(self):
+        curated = MODULE.new_curated_rules()
+        records = [
+            MODULE.Record("1", "奖励", "Reward"),
+            MODULE.Record("2", "升级", "Level Up"),
+        ]
+        MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=curated,
+            observations_store=MODULE.new_observation_store(),
+            input_digest="fixture-no-curated-pollution",
+        )
+        self.assertEqual(curated["terms"], {})
+
 
 class CliIntegrationTests(unittest.TestCase):
+    def test_cli_can_generate_source_only_final_terms(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "source_only_language_table.xlsx"
+            detail_path = temp_path / "detail.xlsx"
+            final_path = temp_path / "final.xlsx"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Sheet0"
+            worksheet.append(["ID", "cn"])
+            worksheet.append(["1", "奖励"])
+            worksheet.append(["2", "奖励补发"])
+            worksheet.append(["3", "升级"])
+            workbook.save(input_path)
+            workbook.close()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--output",
+                    str(detail_path),
+                    "--final-output",
+                    str(final_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--source-only",
+                    "--include-empty-final-terms",
+                    "--min-hit",
+                    "1",
+                    "--glossary-hit-threshold",
+                    "1",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            final_workbook = load_workbook(final_path, read_only=True, data_only=True)
+            rows = list(final_workbook["Glossary"].iter_rows(values_only=True))
+            lookup = {row[1]: row for row in rows[1:]}
+            self.assertIn("奖励", lookup)
+            self.assertEqual(lookup["奖励"][2], None)
+            self.assertEqual(lookup["奖励"][3], None)
+            final_workbook.close()
+
     def test_cli_generates_detail_final_and_store_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
