@@ -62,6 +62,16 @@
 
 如果语言表还没有英文列，则先启用源文-only 模式，只提取 `CN` 候选并保留 `ID / CN / EN / EN2` 结构。后续拿到人工确认或翻译结果后，再用回灌脚本补齐规则层。
 
+源文-only 项目建议按状态分阶段交付：
+
+- `项目名-已提取-YYYYMMDD.xlsx`
+- `项目名-预翻译-YYYYMMDD.xlsx`
+- `项目名-已分类-YYYYMMDD.xlsx`
+- `项目名-已审校-YYYYMMDD.xlsx`
+- `项目名-已回灌-YYYYMMDD.xlsx`
+
+分类整理版主表使用 `ID / CN / EN / EN2 / 分类`，并将 `分类` 放在最后一列。同类术语应连续排列，便于翻译、LQA 和术语管理员筛选。完整复盘见 [source-only delivery retrospective](source-only-delivery-retrospective.md)。
+
 ### 5. 示例与手动适配拆分
 
 拆分原则：

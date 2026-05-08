@@ -56,6 +56,8 @@
 - 输出文件默认写到输入文件同目录，不作为仓库产物提交
 - 人工确认结果优先回灌到 `curated_terms.json`
 - 自动观察结果只写入 `observed_terms.json`，不要手工堆历史噪音词
+- 交付文件命名统一使用 `项目名-文件状态-日期.xlsx`
+- 文件状态优先使用 `已提取 / 预翻译 / 已分类 / 已审校 / 已回灌`
 
 ## 提交规范
 
@@ -79,7 +81,9 @@
 ## 仓库内维护入口
 
 - 常规维护：`docs/maintenance.md`
+- 源文-only 交付复盘：`docs/source-only-delivery-retrospective.md`
 - 清单模板：`templates/maintenance_checklist.md`
+- 命名状态模板：`templates/delivery_status_naming.tsv`
 - GitHub issue 模板：`.github/ISSUE_TEMPLATE/glossary-maintenance.md`
 - 回归 fixture：`fixtures/`
 - 人工规则：`data/experience/curated_terms.json`

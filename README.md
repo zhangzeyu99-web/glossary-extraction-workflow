@@ -161,6 +161,7 @@ python scripts/import_curated_glossary.py /path/to/final_glossary.xlsx \
 
 - [docs/workflow.md](docs/workflow.md)：完整提炼流程
 - [docs/maintenance.md](docs/maintenance.md)：维护与回归规范
+- [docs/source-only-delivery-retrospective.md](docs/source-only-delivery-retrospective.md)：源文-only 术语提取、预翻译、分类整理和标准命名复盘
 
 ## Harness 回归
 
@@ -214,6 +215,7 @@ harness 会检查：
 
 - [templates/final_glossary_headers.tsv](templates/final_glossary_headers.tsv)
 - [templates/language_table_minimum_headers.tsv](templates/language_table_minimum_headers.tsv)
+- [templates/delivery_status_naming.tsv](templates/delivery_status_naming.tsv)
 - [templates/maintenance_checklist.md](templates/maintenance_checklist.md)
 - [examples/README.md](examples/README.md)
 
