@@ -170,6 +170,108 @@ HIGH_CONFUSION_TERMS = (
     }
 )
 
+PROJECT_SIGNAL_GROUPS = {
+    "战斗/RPG养成": {
+        "战斗",
+        "攻击",
+        "防御",
+        "生命",
+        "伤害",
+        "暴击",
+        "技能",
+        "英雄",
+        "装备",
+        "武器",
+        "首领",
+        "BOSS",
+        "怪物",
+        "关卡",
+        "挑战",
+    },
+    "基地/建筑经营": {
+        "基地",
+        "建筑",
+        "兵营",
+        "防御塔",
+        "建造",
+        "升级",
+        "营地",
+        "总部",
+        "据点",
+        "采集",
+        "生产",
+    },
+    "活动/商业化": {
+        "活动",
+        "签到",
+        "战令",
+        "礼包",
+        "充值",
+        "商店",
+        "商城",
+        "购买",
+        "限时",
+        "奖励",
+        "抽奖",
+        "召唤",
+    },
+    "社交/公会竞争": {
+        "公会",
+        "联盟",
+        "好友",
+        "排行榜",
+        "排名",
+        "竞技场",
+        "聊天",
+        "邀请",
+        "成员",
+        "队伍",
+    },
+    "飞行/射击题材": {
+        "飞机",
+        "战机",
+        "飞行员",
+        "机库",
+        "导弹",
+        "空袭",
+        "射击",
+        "僚机",
+        "弹幕",
+    },
+    "末日/生存题材": {
+        "幸存者",
+        "僵尸",
+        "末日",
+        "避难所",
+        "感染",
+        "生存",
+        "废土",
+        "救援",
+    },
+    "剧情/叙事": {
+        "剧情",
+        "章节",
+        "对话",
+        "故事",
+        "任务",
+        "探索",
+        "冒险",
+        "线索",
+        "选择",
+    },
+}
+
+CATEGORY_LABELS = {
+    "rarity": "稀有度/品质",
+    "resource": "资源/货币/奖励",
+    "stat": "战斗属性/数值",
+    "action": "UI操作动词",
+    "system": "系统/玩法名",
+    "object": "角色/装备/对象",
+    "status": "状态/进度",
+    "other": "其他",
+}
+
 
 @dataclass
 class Record:
@@ -993,6 +1095,246 @@ def build_term_rows(
     return rows_by_term, glossary_rows, high_risk_rows, manual_rows, final_rows
 
 
+def keyword_evidence(records: list[Record], keywords: set[str]) -> tuple[int, Counter[str]]:
+    row_hits = 0
+    keyword_counter: Counter[str] = Counter()
+    for record in records:
+        matched = False
+        for keyword in keywords:
+            if keyword in record.source:
+                keyword_counter[keyword] += 1
+                matched = True
+        if matched:
+            row_hits += 1
+    return row_hits, keyword_counter
+
+
+def infer_project_signals(records: list[Record], limit: int = 5) -> list[dict[str, object]]:
+    signals: list[dict[str, object]] = []
+    for label, keywords in PROJECT_SIGNAL_GROUPS.items():
+        row_hits, evidence_counter = keyword_evidence(records, keywords)
+        if not row_hits:
+            continue
+        signals.append(
+            {
+                "label": label,
+                "hit_rows": row_hits,
+                "evidence": join_counter(evidence_counter, limit=6),
+            }
+        )
+    signals.sort(key=lambda item: (-int(item["hit_rows"]), str(item["label"])))
+    return signals[:limit]
+
+
+def markdown_table(headers: list[str], rows: list[list[object]]) -> str:
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _header in headers) + " |",
+    ]
+    for row in rows:
+        escaped = [str(value).replace("|", "\\|") for value in row]
+        lines.append("| " + " | ".join(escaped) + " |")
+    return "\n".join(lines)
+
+
+def source_samples(records: list[Record], signals: list[dict[str, object]], limit: int = 5) -> list[str]:
+    if not signals:
+        return []
+    signal_labels = {str(signal["label"]) for signal in signals}
+    keywords: set[str] = set()
+    for label, group_keywords in PROJECT_SIGNAL_GROUPS.items():
+        if label in signal_labels:
+            keywords.update(group_keywords)
+
+    samples: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        if len(record.source) > 48:
+            continue
+        if not any(keyword in record.source for keyword in keywords):
+            continue
+        sample = f"{record.row_id}: {record.source}" if record.row_id else record.source
+        if sample in seen:
+            continue
+        samples.append(sample)
+        seen.add(sample)
+        if len(samples) >= limit:
+            break
+    return samples
+
+
+def category_distribution(rows: list[dict[str, object]]) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for row in rows:
+        category = str(row.get("Category") or "other")
+        counter[CATEGORY_LABELS.get(category, category)] += 1
+    return counter
+
+
+def top_terms(rows: list[dict[str, object]], limit: int = 8) -> list[str]:
+    terms: list[str] = []
+    for row in sorted(rows, key=lambda item: (-int(item.get("HitRows") or 0), str(item.get("CN") or "")))[:limit]:
+        cn = str(row.get("CN") or "")
+        en = str(row.get("EN") or "")
+        en2 = str(row.get("EN2") or "")
+        hit_rows = int(row.get("HitRows") or 0)
+        english = en if not en2 else f"{en} / {en2}"
+        terms.append(f"{cn} -> {english} ({hit_rows})" if english else f"{cn} ({hit_rows})")
+    return terms
+
+
+def style_guidance(signals: list[dict[str, object]], categories: Counter[str], target_coverage: int) -> list[str]:
+    labels = {str(signal["label"]) for signal in signals}
+    guidance = [
+        "整体风格使用清晰、直接、移动游戏 UI 友好的英语，避免文学化扩写。",
+        "按钮和短 UI 优先用短动词或动词短语，保持 Title Case 或现有项目大小写规则一致。",
+        "变量、数字、换行、富文本标签和占位符必须原样保留，不为了语顺移动到错误位置。",
+    ]
+    if "战斗/RPG养成" in labels or categories.get("战斗属性/数值", 0):
+        guidance.append("战斗、属性、技能说明优先准确表达机制，不使用夸张营销词替代数值含义。")
+    if "基地/建筑经营" in labels:
+        guidance.append("建筑、基地、升级线采用稳定系统名；同一建筑不要在 HQ/Base/Headquarters 之间漂移。")
+    if "活动/商业化" in labels:
+        guidance.append("活动、礼包、商店文案可以偏促销，但仍要短、明确、不过度夸张。")
+    if "社交/公会竞争" in labels:
+        guidance.append("公会、排行、竞技相关术语保持玩家社区常用表达，如 Guild、Ranking、Arena。")
+    if "剧情/叙事" in labels:
+        guidance.append("剧情和任务文案允许更自然，但不要牺牲系统术语一致性。")
+    if target_coverage:
+        guidance.append("已有英文译文视为项目历史用法；当它和术语表冲突时，优先检查是否属于手动适配 EN2。")
+    return guidance
+
+
+def build_translation_prompt(
+    project_name: str,
+    signals: list[dict[str, object]],
+    categories: Counter[str],
+    key_terms: list[str],
+    target_coverage: int,
+) -> str:
+    signal_text = "、".join(str(signal["label"]) for signal in signals) if signals else "未出现强题材信号"
+    category_text = "、".join(f"{name}{count}项" for name, count in categories.most_common(6)) or "暂无稳定术语分类"
+    term_text = "\n".join(f"- {term}" for term in key_terms) if key_terms else "- 使用随附术语表中的 EN/EN2。"
+    existing_en_rule = (
+        "已有英文译文代表项目历史用法；如与标准术语不同，先判断是否属于 EN2 手动适配。"
+        if target_coverage
+        else "当前输入可能没有英文列；先按术语表和项目审查提示建立英语风格。"
+    )
+    return "\n".join(
+        [
+            f"你是一名严谨的游戏出海本地化译员，正在处理《{project_name}》。",
+            f"项目语言表推断信号：{signal_text}。",
+            f"术语分布重点：{category_text}。",
+            "",
+            "翻译目标：输出自然、准确、适配移动游戏 UI 的英文；系统名和数值机制优先一致，活动和商业化文案可以略有吸引力但不能夸张。",
+            "",
+            "翻译规则：",
+            "1. 优先遵守术语表：EN 是标准译法，EN2 是真实项目中稳定出现的手动适配译法。",
+            f"2. {existing_en_rule}",
+            "3. UI 按钮使用短动词或短动词短语；系统、道具、技能、建筑名保持名词化和大小写一致。",
+            "4. 战斗属性、概率、奖励、时间、等级、货币等数值相关文本必须精确，不擅自增减含义。",
+            "5. 保留所有变量、数字、换行、颜色标签、HTML/富文本标签和占位符。",
+            "6. 若同一中文术语已有固定译法，不要为了句式变化改写成另一套英文。",
+            "",
+            "优先关注术语：",
+            term_text,
+        ]
+    )
+
+
+def build_project_brief(
+    project_name: str,
+    sheet_name: str,
+    records: list[Record],
+    all_rows: list[dict[str, object]],
+    glossary_rows: list[dict[str, object]],
+    manual_rows: list[dict[str, object]],
+) -> tuple[str, str]:
+    source_rows = len(records)
+    target_coverage = sum(1 for record in records if record.target)
+    target_ratio = f"{target_coverage / source_rows:.1%}" if source_rows else "0.0%"
+    average_source_length = f"{sum(len(record.source) for record in records) / source_rows:.1f}" if source_rows else "0.0"
+    signals = infer_project_signals(records)
+    categories = category_distribution(glossary_rows or all_rows)
+    samples = source_samples(records, signals)
+    key_terms = top_terms(glossary_rows or all_rows)
+    prompt = build_translation_prompt(
+        project_name=project_name,
+        signals=signals,
+        categories=categories,
+        key_terms=key_terms,
+        target_coverage=target_coverage,
+    )
+
+    signal_rows = [
+        [signal["label"], signal["hit_rows"], signal["evidence"]]
+        for signal in signals
+    ] or [["未发现强信号", 0, "建议人工补充项目简介"]]
+    category_rows = [
+        [category, count]
+        for category, count in categories.most_common()
+    ] or [["暂无", 0]]
+    guidance_lines = "\n".join(f"- {line}" for line in style_guidance(signals, categories, target_coverage))
+    sample_lines = "\n".join(f"- {sample}" for sample in samples) if samples else "- 语言表中未抽到足够短的代表性样例。"
+    term_lines = "\n".join(f"- {term}" for term in key_terms) if key_terms else "- 暂无高优先级术语。"
+
+    markdown = "\n".join(
+        [
+            f"# {project_name} 项目信息与翻译风格审查",
+            "",
+            "## 输入快照",
+            "",
+            markdown_table(
+                ["项目", "值"],
+                [
+                    ["工作表", sheet_name],
+                    ["语言表行数", source_rows],
+                    ["已有英文行数", f"{target_coverage} ({target_ratio})"],
+                    ["平均原文长度", average_source_length],
+                    ["候选术语数", len(all_rows)],
+                    ["交付术语数", len(glossary_rows)],
+                    ["手动适配术语数", len(manual_rows)],
+                ],
+            ),
+            "",
+            "## 项目内容信号",
+            "",
+            markdown_table(["推断方向", "命中行数", "证据词"], signal_rows),
+            "",
+            "## 代表性原文样例",
+            "",
+            sample_lines,
+            "",
+            "## 术语分布",
+            "",
+            markdown_table(["分类", "术语数"], category_rows),
+            "",
+            "## 翻译风格规则",
+            "",
+            guidance_lines,
+            "",
+            "## 优先关注术语",
+            "",
+            term_lines,
+            "",
+            "## 可复用翻译提示词",
+            "",
+            "```text",
+            prompt,
+            "```",
+            "",
+            "> 本审查由语言表词条和现有译文自动推断，适合作为翻译风格起点；正式交付前仍应由项目负责人确认题材、世界观、人称和专有名词。",
+            "",
+        ]
+    )
+    return markdown, prompt
+
+
+def write_text_output(output_path: Path, content: str) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content, encoding="utf-8")
+
+
 def append_rows(worksheet, headers: list[str], rows: list[dict[str, object]]) -> None:
     worksheet.append(headers)
     for row in rows:
@@ -1121,6 +1463,13 @@ def default_output_paths(input_path: Path, detail_output: str | None, final_outp
     return detail_path, final_path
 
 
+def default_project_brief_output_path(input_path: Path, project_brief_output: str | None) -> Path:
+    date_suffix = datetime.now().strftime("%Y%m%d")
+    return Path(project_brief_output) if project_brief_output else input_path.with_name(
+        f"{input_path.stem}_project_brief_{date_suffix}.md"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Extract glossary terms from a game localization language table.")
     parser.add_argument("input_path", help="Path to the source XLSX language table.")
@@ -1157,6 +1506,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_OBSERVATIONS_STORE),
         help="Path to the observed term usage JSON file. Default: data/experience/observed_terms.json",
     )
+    parser.add_argument(
+        "--project-name",
+        help="Project name used in the project brief. Defaults to the input file stem.",
+    )
+    parser.add_argument(
+        "--project-brief-output",
+        help="Path for the project audit Markdown output. Defaults to *_project_brief_YYYYMMDD.md.",
+    )
+    parser.add_argument(
+        "--translation-prompt-output",
+        help="Optional path for a prompt-only text output extracted from the project brief.",
+    )
+    parser.add_argument(
+        "--no-project-brief",
+        action="store_true",
+        help="Disable project audit Markdown generation.",
+    )
     return parser
 
 
@@ -1168,6 +1534,12 @@ def main(argv: list[str] | None = None) -> int:
         detail_output=args.output,
         final_output=args.final_output,
     )
+    project_name = args.project_name or input_path.stem
+    project_brief_output_path = default_project_brief_output_path(
+        input_path=input_path,
+        project_brief_output=args.project_brief_output,
+    )
+    translation_prompt_output_path = Path(args.translation_prompt_output) if args.translation_prompt_output else None
     curated_rules_path = Path(args.curated_rules) if args.curated_rules else None
     observations_store_path = Path(args.observations_store) if args.observations_store else None
     curated_rules = load_curated_rules(curated_rules_path)
@@ -1204,12 +1576,26 @@ def main(argv: list[str] | None = None) -> int:
         observations_store_path=observations_store_path,
     )
     write_final_workbook(output_path=final_output_path, final_rows=final_rows)
+    project_brief_markdown, translation_prompt = build_project_brief(
+        project_name=project_name,
+        sheet_name=sheet_name,
+        records=records,
+        all_rows=all_rows,
+        glossary_rows=glossary_rows,
+        manual_rows=manual_rows,
+    )
+    if not args.no_project_brief:
+        write_text_output(project_brief_output_path, project_brief_markdown)
+    if translation_prompt_output_path is not None:
+        write_text_output(translation_prompt_output_path, translation_prompt)
     save_curated_rules(curated_rules_path, curated_rules)
     save_observation_store(observations_store_path, observations_store)
 
     print(f"INPUT={input_path}")
     print(f"DETAIL_OUTPUT={detail_output_path}")
     print(f"FINAL_OUTPUT={final_output_path}")
+    print(f"PROJECT_BRIEF_OUTPUT={project_brief_output_path if not args.no_project_brief else 'disabled'}")
+    print(f"TRANSLATION_PROMPT_OUTPUT={translation_prompt_output_path or 'disabled'}")
     print(f"CURATED_RULES={curated_rules_path or 'disabled'}")
     print(f"OBSERVATIONS_STORE={observations_store_path or 'disabled'}")
     print(f"SHEET={sheet_name}")

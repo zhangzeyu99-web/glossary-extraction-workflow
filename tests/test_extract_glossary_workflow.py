@@ -98,6 +98,38 @@ class UtilityTests(unittest.TestCase):
             "Upgrade",
         )
 
+    def test_build_project_brief_infers_project_signals_and_prompt(self):
+        records = [
+            MODULE.Record("1", "升级基地", "Upgrade HQ"),
+            MODULE.Record("2", "攻击力提升", "ATK Up"),
+            MODULE.Record("3", "公会排行榜", "Guild Ranking"),
+            MODULE.Record("4", "限时礼包", "Limited Pack"),
+        ]
+        all_rows, glossary_rows, _high_risk_rows, manual_rows, _final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="brief-fixture",
+        )
+
+        markdown, prompt = MODULE.build_project_brief(
+            project_name="Fixture Game",
+            sheet_name="Sheet0",
+            records=records,
+            all_rows=all_rows,
+            glossary_rows=glossary_rows,
+            manual_rows=manual_rows,
+        )
+
+        self.assertIn("Fixture Game", markdown)
+        self.assertIn("基地/建筑经营", markdown)
+        self.assertIn("战斗/RPG养成", markdown)
+        self.assertIn("活动/商业化", markdown)
+        self.assertIn("翻译目标", prompt)
+        self.assertIn("EN 是标准译法", prompt)
+
 
 class MemoryTests(unittest.TestCase):
     def test_preferences_can_block_en2_and_accumulate_observations(self):
@@ -338,6 +370,8 @@ class CliIntegrationTests(unittest.TestCase):
             final_path = temp_path / "final.xlsx"
             curated_path = temp_path / "curated.json"
             observations_path = temp_path / "observations.json"
+            project_brief_path = temp_path / "project_brief.md"
+            prompt_path = temp_path / "translation_prompt.txt"
 
             workbook = Workbook()
             worksheet = workbook.active
@@ -391,6 +425,12 @@ class CliIntegrationTests(unittest.TestCase):
                     str(curated_path),
                     "--observations-store",
                     str(observations_path),
+                    "--project-name",
+                    "Fixture Game",
+                    "--project-brief-output",
+                    str(project_brief_path),
+                    "--translation-prompt-output",
+                    str(prompt_path),
                     "--min-hit",
                     "1",
                     "--glossary-hit-threshold",
@@ -407,6 +447,15 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertTrue(final_path.exists())
             self.assertTrue(curated_path.exists())
             self.assertTrue(observations_path.exists())
+            self.assertTrue(project_brief_path.exists())
+            self.assertTrue(prompt_path.exists())
+            project_brief = project_brief_path.read_text(encoding="utf-8")
+            prompt = prompt_path.read_text(encoding="utf-8")
+            self.assertIn("Fixture Game", project_brief)
+            self.assertIn("可复用翻译提示词", project_brief)
+            self.assertIn("翻译目标", prompt)
+            self.assertIn("PROJECT_BRIEF_OUTPUT=", result.stdout)
+            self.assertIn("TRANSLATION_PROMPT_OUTPUT=", result.stdout)
 
             final_workbook = load_workbook(final_path, read_only=True, data_only=True)
             glossary_sheet = final_workbook["Glossary"]

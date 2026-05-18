@@ -112,7 +112,36 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --observations-store data/experience/observed_terms.json
 ```
 
-### 4. 产物说明
+### 4. 项目审查与风格提示词
+
+每次扫描完整语言包时，脚本会同步输出一份项目审查 Markdown：
+
+- `*_project_brief_YYYYMMDD.md`
+  根据语言表词条和现有译文推断项目题材、系统重点、术语分布、翻译风格规则，并附带一段可直接复用的翻译提示词。
+
+可显式指定项目名和输出路径：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --project-name "Project Name" \
+  --project-brief-output /path/to/project_brief.md
+```
+
+如果只想额外导出纯提示词：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --translation-prompt-output /path/to/translation_prompt.txt
+```
+
+如果某次只需要术语表，不需要项目审查：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --no-project-brief
+```
+
+### 5. 产物说明
 
 脚本默认在输入文件同目录输出两份 Excel：
 
@@ -120,6 +149,8 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   工作明细版，包含候选术语、风险、示例用法、手动适配、差异说明
 - `*_ID_CN_EN_EN2_YYYYMMDD.xlsx`
   干净交付版，只保留 `ID / CN / EN / EN2`
+- `*_project_brief_YYYYMMDD.md`
+  项目审查与翻译风格提示词，用于给译员、LQA 或翻译模型建立项目语气和术语使用边界
 
 同时会更新：
 
@@ -128,7 +159,7 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 - `data/experience/observed_terms.json`
   自动观察层，保存历史出现过的候选、手动适配、命中次数和上次输入指纹
 
-### 5. 回灌人工确认结果
+### 6. 回灌人工确认结果
 
 当你已经拿到人工确认过的最终交付表，可以直接回灌到人工规则层：
 
