@@ -182,16 +182,15 @@ PROJECT_SIGNAL_GROUPS = {
         "生产机器",
         "生成器",
         "仓库",
-        "解锁",
         "菜品",
         "烹饪",
         "顾客",
         "Merge",
     },
     "花店/装修": {
-        "花",
         "花店",
         "花束",
+        "鲜花",
         "玫瑰",
         "百合",
         "装饰",
@@ -1471,6 +1470,12 @@ def style_guidance(signals: list[dict[str, object]], categories: Counter[str], t
 
 def project_type_from_signals(signals: list[dict[str, object]]) -> str:
     labels = {str(signal["label"]) for signal in signals}
+    if "飞行/射击题材" in labels and "战斗/RPG养成" in labels:
+        return "科幻战机 / 飞行射击 / RPG养成"
+    if "飞行/射击题材" in labels:
+        return "飞行射击"
+    if "战斗/RPG养成" in labels and "社交/公会竞争" in labels and "基地/建筑经营" in labels:
+        return "战斗/RPG养成 / 轻SLG"
     if {"合成/经营", "花店/装修", "剧情/叙事"} <= labels:
         return "合成经营 / 花店修复 / 轻剧情休闲"
     if {"合成/经营", "剧情/叙事"} <= labels:
@@ -1479,8 +1484,6 @@ def project_type_from_signals(signals: list[dict[str, object]]) -> str:
         return "花店装修 / 休闲经营"
     if "休闲/女性向" in labels:
         return "女性向休闲"
-    if "飞行/射击题材" in labels:
-        return "飞行射击"
     if "战斗/RPG养成" in labels:
         return "战斗/RPG养成"
     if "剧情/叙事" in labels:
@@ -1490,6 +1493,10 @@ def project_type_from_signals(signals: list[dict[str, object]]) -> str:
 
 def target_user_from_signals(signals: list[dict[str, object]]) -> str:
     labels = {str(signal["label"]) for signal in signals}
+    if "飞行/射击题材" in labels:
+        return "偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。"
+    if "战斗/RPG养成" in labels:
+        return "偏中度、关注战力成长、英雄/装备养成、活动奖励和竞技排名的移动端玩家。"
     if "花店/装修" in labels or "休闲/女性向" in labels:
         return "偏休闲、喜欢合成/装修/经营和轻剧情的女性向或轻度玩家。"
     if "合成/经营" in labels:
@@ -1499,18 +1506,42 @@ def target_user_from_signals(signals: list[dict[str, object]]) -> str:
     return "移动端游戏玩家。"
 
 
+def signal_hit_map(signals: list[dict[str, object]]) -> dict[str, int]:
+    return {str(signal["label"]): int(signal["hit_rows"]) for signal in signals}
+
+
 def content_focus_from_signals(signals: list[dict[str, object]]) -> str:
     labels = {str(signal["label"]) for signal in signals}
+    hits = signal_hit_map(signals)
     focus: list[str] = []
-    if "合成/经营" in labels:
+    if "飞行/射击题材" in labels:
+        focus.append("战机、导弹、射击、弹幕等战斗内容")
+    if "战斗/RPG养成" in labels:
+        focus.append("英雄、装备、技能、属性和战力成长")
+    if "基地/建筑经营" in labels:
+        focus.append("建造、升级、采集、生产等基地系统")
+    if hits.get("合成/经营", 0) >= 20:
         focus.append("合成、订单、生产、仓库等玩法 UI")
-    if "花店/装修" in labels:
+    if hits.get("花店/装修", 0) >= 10:
         focus.append("花店修复、装饰和生活化物件")
     if "剧情/叙事" in labels:
         focus.append("角色剧情对话")
     if "活动/商业化" in labels:
         focus.append("活动、礼包和奖励")
     return "；".join(focus) if focus else "系统 UI、玩法说明和剧情文本"
+
+
+def tone_rule_from_signals(signals: list[dict[str, object]]) -> str:
+    labels = {str(signal["label"]) for signal in signals}
+    if "飞行/射击题材" in labels:
+        return "整体语气冷静、利落、偏科幻军事；战机、装备、导弹、技能和战斗数值要专业清晰，避免可爱化、生活化或过度口语化。"
+    if "战斗/RPG养成" in labels:
+        return "整体语气清晰、有力量感；战斗、英雄、装备和数值成长要准确直接，避免弱化机制或夸张营销。"
+    if "花店/装修" in labels or "休闲/女性向" in labels:
+        return "整体语气偏轻松、温暖、生活化；涉及花店、装修、订单、合成、经营时避免硬核或过度严肃的表达。"
+    if "合成/经营" in labels:
+        return "整体语气轻松、清晰、偏休闲；合成、订单、生产和仓库说明要短句化，避免复杂长句。"
+    return "整体语气清晰、自然、符合移动游戏语境；不要为了润色改变玩法含义。"
 
 
 def build_translation_prompt(
@@ -1521,6 +1552,7 @@ def build_translation_prompt(
     target_coverage: int,
 ) -> str:
     project_type = project_type_from_signals(signals)
+    tone_rule = tone_rule_from_signals(signals)
     term_rule = "关键术语以随附术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法。"
     if not key_terms:
         term_rule = "如未提供术语表，需先从上下文判断固定系统名，保持同一中文术语的英文一致。"
@@ -1535,7 +1567,7 @@ def build_translation_prompt(
             "译文需符合以下要求：",
             "1. 游戏内容/UI/玩法说明尽量精简，适配移动游戏按钮、弹窗、任务、道具和奖励说明；",
             "2. 剧情对话必须自然、地道、通顺，参考美剧日常对白节奏，保留角色语气、冲突、幽默和情绪，不要逐字直译；",
-            "3. 风格偏轻松、温暖、生活化；涉及花店、装修、订单、合成、经营时避免硬核或过度严肃的表达；",
+            f"3. {tone_rule}",
             f"4. {term_rule}",
             f"5. {existing_en_rule}",
             "6. 保留所有游戏代码、变量、数字、换行、颜色标签、HTML/富文本标签和占位符，如 {0}、%s、<color> 等；",
@@ -1554,12 +1586,13 @@ def build_project_brief(
 ) -> tuple[str, str]:
     source_rows = len(records)
     target_coverage = sum(1 for record in records if record.target)
-    signals = infer_project_signals(records)
+    signals = infer_project_signals(records, limit=10)
     categories = category_distribution(glossary_rows or all_rows)
     key_terms = top_terms(glossary_rows or all_rows)
     project_type = project_type_from_signals(signals)
     target_user = target_user_from_signals(signals)
     content_focus = content_focus_from_signals(signals)
+    tone_rule = tone_rule_from_signals(signals)
     prompt = build_translation_prompt(
         project_name=project_name,
         signals=signals,
@@ -1586,7 +1619,7 @@ def build_project_brief(
                     ["游戏类型", project_type],
                     ["目标用户", target_user],
                     ["内容构成", content_focus],
-                    ["翻译风格", "UI/玩法精简适配移动端；剧情自然、地道、通顺，参考美剧日常对白。"],
+                    ["翻译风格", f"UI/玩法精简适配移动端；剧情自然、地道、通顺，参考美剧日常对白；{tone_rule}"],
                     ["语言资产", f"{source_rows} 条文本，已有英文 {target_coverage} 条。"],
                     ["生成日期", datetime.now().strftime("%Y-%m-%d")],
                 ],

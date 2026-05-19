@@ -164,6 +164,38 @@ class UtilityTests(unittest.TestCase):
             self.assertEqual(sheet_name, "Main")
             self.assertEqual(records, [MODULE.Record("UIMail101", "领取", "Claim")])
 
+    def test_project_brief_prioritizes_aircraft_combat_over_noise(self):
+        records = [
+            MODULE.Record("1", "战机攻击提升", "Aircraft ATK Up"),
+            MODULE.Record("2", "导弹伤害增加", "Missile DMG Up"),
+            MODULE.Record("3", "弹幕射击技能", "Barrage Skill"),
+            MODULE.Record("4", "英雄装备强化", "Enhance Hero Gear"),
+            MODULE.Record("5", "礼包奖励", "Pack Rewards"),
+            MODULE.Record("6", "修复失败", "Repair failed"),
+        ]
+        all_rows, glossary_rows, _high_risk_rows, manual_rows, _final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="aircraft-brief-fixture",
+        )
+
+        markdown, prompt = MODULE.build_project_brief(
+            project_name="Aircraft",
+            sheet_name="Sheet0",
+            records=records,
+            all_rows=all_rows,
+            glossary_rows=glossary_rows,
+            manual_rows=manual_rows,
+        )
+
+        self.assertIn("科幻战机 / 飞行射击 / RPG养成", markdown)
+        self.assertIn("偏科幻军事", prompt)
+        self.assertIn("避免可爱化", prompt)
+        self.assertNotIn("花店修复", markdown)
+
 
 class MemoryTests(unittest.TestCase):
     def test_preferences_can_block_en2_and_accumulate_observations(self):
