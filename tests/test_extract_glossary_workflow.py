@@ -100,10 +100,11 @@ class UtilityTests(unittest.TestCase):
 
     def test_build_project_brief_infers_project_signals_and_prompt(self):
         records = [
-            MODULE.Record("1", "升级基地", "Upgrade HQ"),
-            MODULE.Record("2", "攻击力提升", "ATK Up"),
-            MODULE.Record("3", "公会排行榜", "Guild Ranking"),
-            MODULE.Record("4", "限时礼包", "Limited Pack"),
+            MODULE.Record("1", "合成花束完成订单", "Merge bouquets to complete orders"),
+            MODULE.Record("2", "修复花店装饰", "Restore the flower shop decor"),
+            MODULE.Record("3", "领取奖励", "Claim Rewards"),
+            MODULE.Record("4", "先生，我最后再问一次……您确定要这么做吗？", "Sir, I'll ask one last time... Are you sure?"),
+            MODULE.Record("5", "这里唯一危险的东西是你和你的电锯！", "The only dangerous thing here is you and your chainsaw!"),
         ]
         all_rows, glossary_rows, _high_risk_rows, manual_rows, _final_rows = MODULE.build_term_rows(
             records=records,
@@ -124,11 +125,44 @@ class UtilityTests(unittest.TestCase):
         )
 
         self.assertIn("Fixture Game", markdown)
-        self.assertIn("基地/建筑经营", markdown)
-        self.assertIn("战斗/RPG养成", markdown)
-        self.assertIn("活动/商业化", markdown)
-        self.assertIn("翻译目标", prompt)
-        self.assertIn("EN 是标准译法", prompt)
+        self.assertIn("AI 生成的专属翻译提示词", markdown)
+        self.assertIn("项目元信息", markdown)
+        self.assertIn("合成经营", markdown)
+        self.assertNotIn("输入快照", markdown)
+        self.assertIn("译文需符合以下要求", prompt)
+        self.assertIn("美剧日常对白", prompt)
+        self.assertIn("游戏内容/UI/玩法说明尽量精简", prompt)
+
+    def test_load_records_falls_back_to_raw_xlsx_reader(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "styled_language_table.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Main"
+            worksheet.append(["ID", "简体中文", "英文"])
+            worksheet.append(["UIMail101", "领取", "Claim"])
+            workbook.save(input_path)
+            workbook.close()
+
+            original_loader = MODULE.load_workbook
+
+            def failing_loader(*_args, **_kwargs):
+                raise TypeError("expected <class 'openpyxl.styles.fills.Fill'>")
+
+            try:
+                MODULE.load_workbook = failing_loader
+                records, sheet_name = MODULE.load_records(
+                    input_path=input_path,
+                    sheet_name="Main",
+                    id_column="ID",
+                    source_column="简体中文",
+                    target_column="英文",
+                )
+            finally:
+                MODULE.load_workbook = original_loader
+
+            self.assertEqual(sheet_name, "Main")
+            self.assertEqual(records, [MODULE.Record("UIMail101", "领取", "Claim")])
 
 
 class MemoryTests(unittest.TestCase):
@@ -452,8 +486,9 @@ class CliIntegrationTests(unittest.TestCase):
             project_brief = project_brief_path.read_text(encoding="utf-8")
             prompt = prompt_path.read_text(encoding="utf-8")
             self.assertIn("Fixture Game", project_brief)
-            self.assertIn("可复用翻译提示词", project_brief)
-            self.assertIn("翻译目标", prompt)
+            self.assertIn("AI 生成的专属翻译提示词", project_brief)
+            self.assertIn("项目元信息", project_brief)
+            self.assertIn("译文需符合以下要求", prompt)
             self.assertIn("PROJECT_BRIEF_OUTPUT=", result.stdout)
             self.assertIn("TRANSLATION_PROMPT_OUTPUT=", result.stdout)
 

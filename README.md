@@ -117,7 +117,7 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 每次扫描完整语言包时，脚本会同步输出一份项目审查 Markdown：
 
 - `*_project_brief_YYYYMMDD.md`
-  根据语言表词条和现有译文推断项目题材、系统重点、术语分布、翻译风格规则，并附带一段可直接复用的翻译提示词。
+  输出两块内容：`AI 生成的专属翻译提示词` 和 `项目元信息`。提示词会按项目类型区分 UI/玩法文案与剧情对话，例如 UI 适配移动端并尽量精简，剧情则要求自然、地道、通顺，参考美剧日常对白节奏。
 
 可显式指定项目名和输出路径：
 
@@ -150,7 +150,7 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 - `*_ID_CN_EN_EN2_YYYYMMDD.xlsx`
   干净交付版，只保留 `ID / CN / EN / EN2`
 - `*_project_brief_YYYYMMDD.md`
-  项目审查与翻译风格提示词，用于给译员、LQA 或翻译模型建立项目语气和术语使用边界
+  精简项目 brief，用于给译员、LQA 或翻译模型快速建立项目语气和术语使用边界
 
 同时会更新：
 

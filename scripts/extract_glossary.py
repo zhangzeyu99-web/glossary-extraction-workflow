@@ -4,12 +4,15 @@ import argparse
 import hashlib
 import html
 import json
+import posixpath
 import re
+import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zipfile import ZipFile
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -171,6 +174,47 @@ HIGH_CONFUSION_TERMS = (
 )
 
 PROJECT_SIGNAL_GROUPS = {
+    "合成/经营": {
+        "合成",
+        "订单",
+        "生产",
+        "生产机",
+        "生产机器",
+        "生成器",
+        "仓库",
+        "解锁",
+        "菜品",
+        "烹饪",
+        "顾客",
+        "Merge",
+    },
+    "花店/装修": {
+        "花",
+        "花店",
+        "花束",
+        "玫瑰",
+        "百合",
+        "装饰",
+        "装修",
+        "修复",
+        "翻新",
+        "花园",
+        "Florist",
+    },
+    "休闲/女性向": {
+        "可爱",
+        "漂亮",
+        "温馨",
+        "甜",
+        "咖啡",
+        "甜品",
+        "裙",
+        "珠宝",
+        "约会",
+        "浪漫",
+        "美女",
+        "小姐",
+    },
     "战斗/RPG养成": {
         "战斗",
         "攻击",
@@ -258,6 +302,11 @@ PROJECT_SIGNAL_GROUPS = {
         "冒险",
         "线索",
         "选择",
+        "先生",
+        "老板",
+        "小姐",
+        "等等",
+        "拜托",
     },
 }
 
@@ -894,6 +943,212 @@ def resolve_column_index(headers: list[object], expected_name: str) -> int:
     return normalized[key]
 
 
+XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+XLSX_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+XLSX_NS = {"a": XLSX_MAIN_NS, "rel": PACKAGE_REL_NS}
+
+
+def cell_column_index(cell_ref: str) -> int:
+    match = re.match(r"([A-Z]+)", cell_ref or "")
+    if not match:
+        return 0
+    index = 0
+    for char in match.group(1):
+        index = index * 26 + ord(char) - 64
+    return index - 1
+
+
+def xml_text(node: ET.Element | None) -> str:
+    if node is None:
+        return ""
+    return "".join(node.itertext())
+
+
+def workbook_sheet_targets(archive: ZipFile) -> list[tuple[str, str]]:
+    workbook_root = ET.fromstring(archive.read("xl/workbook.xml"))
+    rels_root = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    rel_map = {
+        rel.attrib["Id"]: rel.attrib["Target"]
+        for rel in rels_root.findall("rel:Relationship", XLSX_NS)
+    }
+    sheets: list[tuple[str, str]] = []
+    for sheet in workbook_root.find("a:sheets", XLSX_NS).findall("a:sheet", XLSX_NS):
+        rel_id = sheet.attrib[f"{{{XLSX_REL_NS}}}id"]
+        target = rel_map[rel_id]
+        target_path = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("xl", target))
+        sheets.append((sheet.attrib["name"], target_path))
+    return sheets
+
+
+def load_shared_strings(archive: ZipFile) -> list[str]:
+    if "xl/sharedStrings.xml" not in archive.namelist():
+        return []
+    root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+    return [xml_text(item) for item in root.findall("a:si", XLSX_NS)]
+
+
+def raw_cell_value(cell: ET.Element, shared_strings: list[str]) -> str:
+    cell_type = cell.attrib.get("t")
+    if cell_type == "s":
+        value = cell.find("a:v", XLSX_NS)
+        if value is None or value.text is None:
+            return ""
+        try:
+            return shared_strings[int(value.text)]
+        except (IndexError, ValueError):
+            return ""
+    if cell_type == "inlineStr":
+        return xml_text(cell.find("a:is", XLSX_NS))
+    value = cell.find("a:v", XLSX_NS)
+    return "" if value is None or value.text is None else value.text
+
+
+def iter_raw_xlsx_sheets(input_path: Path) -> list[tuple[str, list[list[str]]]]:
+    sheets: list[tuple[str, list[list[str]]]] = []
+    with ZipFile(input_path) as archive:
+        shared_strings = load_shared_strings(archive)
+        for sheet_name, target_path in workbook_sheet_targets(archive):
+            root = ET.fromstring(archive.read(target_path))
+            rows: list[list[str]] = []
+            for row in root.findall(".//a:sheetData/a:row", XLSX_NS):
+                cells: list[tuple[int, str]] = []
+                max_column = -1
+                for cell in row.findall("a:c", XLSX_NS):
+                    column_index = cell_column_index(cell.attrib.get("r", ""))
+                    max_column = max(max_column, column_index)
+                    cells.append((column_index, raw_cell_value(cell, shared_strings)))
+                values = [""] * (max_column + 1)
+                for column_index, value in cells:
+                    values[column_index] = value
+                rows.append(values)
+            sheets.append((sheet_name, rows))
+    return sheets
+
+
+def records_from_rows(
+    rows: list[list[object]],
+    sheet_title: str,
+    id_column: str,
+    source_column: str,
+    target_column: str,
+    source_only: bool = False,
+) -> list[Record]:
+    if not rows:
+        return []
+    headers = list(rows[0])
+    id_index = resolve_column_index(headers, id_column)
+    source_index = resolve_column_index(headers, source_column)
+    target_index = None if source_only else resolve_column_index(headers, target_column)
+
+    records: list[Record] = []
+    for row_number, row in enumerate(rows[1:], start=2):
+        row_values = list(row)
+        row_id = "" if id_index >= len(row_values) or row_values[id_index] is None else str(row_values[id_index])
+        if not row_id:
+            row_id = f"{sheet_title}:{row_number}"
+        source = "" if source_index >= len(row_values) else clean_text(row_values[source_index])
+        target = "" if target_index is None or target_index >= len(row_values) else clean_text(row_values[target_index])
+        if not source:
+            continue
+        records.append(Record(row_id=row_id, source=source, target=target))
+    return records
+
+
+def load_records_from_raw_xlsx(
+    input_path: Path,
+    sheet_name: str | None,
+    id_column: str,
+    source_column: str,
+    target_column: str,
+    source_only: bool = False,
+) -> tuple[list[Record], str]:
+    sheets = iter_raw_xlsx_sheets(input_path)
+    if not sheets:
+        return [], ""
+    selected_sheet: tuple[str, list[list[str]]] | None = None
+    for candidate in sheets:
+        if sheet_name is None or candidate[0] == sheet_name:
+            selected_sheet = candidate
+            break
+    if selected_sheet is None:
+        available = ", ".join(name for name, _rows in sheets)
+        raise ValueError(f"Missing worksheet '{sheet_name}'. Available worksheets: {available}")
+    title, rows = selected_sheet
+    return records_from_rows(
+        rows=rows,
+        sheet_title=title,
+        id_column=id_column,
+        source_column=source_column,
+        target_column=target_column,
+        source_only=source_only,
+    ), title
+
+
+def normalized_header_lookup(headers: list[object]) -> dict[str, int]:
+    return {clean_text(name).lower(): index for index, name in enumerate(headers)}
+
+
+def first_matching_header(headers: list[object], candidates: list[str]) -> int | None:
+    lookup = normalized_header_lookup(headers)
+    for candidate in candidates:
+        key = clean_text(candidate).lower()
+        if key in lookup:
+            return lookup[key]
+    return None
+
+
+def auto_records_from_sheet_rows(sheet_title: str, rows: list[list[object]]) -> list[Record]:
+    if not rows:
+        return []
+    headers = list(rows[0])
+    source_index = first_matching_header(
+        headers,
+        ["简体中文", "中文", "正常对话", "cn", "source", "zh", "Chinese"],
+    )
+    if source_index is None:
+        return []
+    target_index = first_matching_header(
+        headers,
+        ["英文", "英语", "en", "English", "优化翻译"],
+    )
+    id_index = first_matching_header(
+        headers,
+        ["唯一标识ID", "ID", "id", "章节", "关卡序号"],
+    )
+
+    records: list[Record] = []
+    for row_number, row in enumerate(rows[1:], start=2):
+        row_values = list(row)
+        source = "" if source_index >= len(row_values) else clean_text(row_values[source_index])
+        if not source:
+            continue
+        target = "" if target_index is None or target_index >= len(row_values) else clean_text(row_values[target_index])
+        row_id = ""
+        if id_index is not None and id_index < len(row_values):
+            row_id = clean_text(row_values[id_index])
+        if not row_id:
+            row_id = f"{sheet_title}:{row_number}"
+        records.append(Record(row_id=row_id, source=source, target=target))
+    return records
+
+
+def load_project_records(input_path: Path) -> list[Record]:
+    try:
+        workbook = load_workbook(input_path, read_only=True, data_only=True)
+        records: list[Record] = []
+        for worksheet in workbook.worksheets:
+            rows = list(worksheet.iter_rows(values_only=True))
+            records.extend(auto_records_from_sheet_rows(worksheet.title, rows))
+        workbook.close()
+        return records
+    except Exception:
+        records = []
+        for sheet_title, rows in iter_raw_xlsx_sheets(input_path):
+            records.extend(auto_records_from_sheet_rows(sheet_title, rows))
+        return records
+
+
 def load_records(
     input_path: Path,
     sheet_name: str | None,
@@ -902,25 +1157,30 @@ def load_records(
     target_column: str,
     source_only: bool = False,
 ) -> tuple[list[Record], str]:
-    workbook = load_workbook(input_path, read_only=True, data_only=True)
-    worksheet = workbook[sheet_name] if sheet_name else workbook[workbook.sheetnames[0]]
+    try:
+        workbook = load_workbook(input_path, read_only=True, data_only=True)
+        worksheet = workbook[sheet_name] if sheet_name else workbook[workbook.sheetnames[0]]
+        rows = list(worksheet.iter_rows(values_only=True))
+        records = records_from_rows(
+            rows=rows,
+            sheet_title=worksheet.title,
+            id_column=id_column,
+            source_column=source_column,
+            target_column=target_column,
+            source_only=source_only,
+        )
+        workbook.close()
+        return records, worksheet.title
+    except Exception:
+        return load_records_from_raw_xlsx(
+            input_path=input_path,
+            sheet_name=sheet_name,
+            id_column=id_column,
+            source_column=source_column,
+            target_column=target_column,
+            source_only=source_only,
+        )
 
-    rows = worksheet.iter_rows(min_row=1, values_only=True)
-    headers = list(next(rows))
-    id_index = resolve_column_index(headers, id_column)
-    source_index = resolve_column_index(headers, source_column)
-    target_index = None if source_only else resolve_column_index(headers, target_column)
-
-    records: list[Record] = []
-    for row in rows:
-        row_id = "" if row[id_index] is None else str(row[id_index])
-        source = clean_text(row[source_index])
-        target = "" if target_index is None else clean_text(row[target_index])
-        if not source:
-            continue
-        records.append(Record(row_id=row_id, source=source, target=target))
-    workbook.close()
-    return records, worksheet.title
 
 
 def build_term_rows(
@@ -1186,23 +1446,71 @@ def top_terms(rows: list[dict[str, object]], limit: int = 8) -> list[str]:
 def style_guidance(signals: list[dict[str, object]], categories: Counter[str], target_coverage: int) -> list[str]:
     labels = {str(signal["label"]) for signal in signals}
     guidance = [
-        "整体风格使用清晰、直接、移动游戏 UI 友好的英语，避免文学化扩写。",
-        "按钮和短 UI 优先用短动词或动词短语，保持 Title Case 或现有项目大小写规则一致。",
-        "变量、数字、换行、富文本标签和占位符必须原样保留，不为了语顺移动到错误位置。",
+        "游戏内容/UI 部分尽量精简，适配移动端按钮、弹窗、任务和道具说明。",
+        "剧情对话必须自然、地道、通顺，参考美剧日常对白节奏，避免逐字直译。",
+        "变量、数字、换行、富文本标签和占位符必须原样保留。",
     ]
+    if "合成/经营" in labels:
+        guidance.append("合成、订单、生产、仓库等玩法术语保持统一，不在不同系统中来回换词。")
+    if "花店/装修" in labels or "休闲/女性向" in labels:
+        guidance.append("整体语气偏温暖、轻松、生活化，避免硬核、军工或过度严肃的表达。")
     if "战斗/RPG养成" in labels or categories.get("战斗属性/数值", 0):
         guidance.append("战斗、属性、技能说明优先准确表达机制，不使用夸张营销词替代数值含义。")
     if "基地/建筑经营" in labels:
         guidance.append("建筑、基地、升级线采用稳定系统名；同一建筑不要在 HQ/Base/Headquarters 之间漂移。")
     if "活动/商业化" in labels:
-        guidance.append("活动、礼包、商店文案可以偏促销，但仍要短、明确、不过度夸张。")
+        guidance.append("活动、礼包、商店文案可以有吸引力，但必须短、明确、不过度夸张。")
     if "社交/公会竞争" in labels:
         guidance.append("公会、排行、竞技相关术语保持玩家社区常用表达，如 Guild、Ranking、Arena。")
     if "剧情/叙事" in labels:
-        guidance.append("剧情和任务文案允许更自然，但不要牺牲系统术语一致性。")
+        guidance.append("角色对话要保留人物关系、情绪冲突和轻喜剧节奏，可使用自然口语与缩写。")
     if target_coverage:
         guidance.append("已有英文译文视为项目历史用法；当它和术语表冲突时，优先检查是否属于手动适配 EN2。")
     return guidance
+
+
+def project_type_from_signals(signals: list[dict[str, object]]) -> str:
+    labels = {str(signal["label"]) for signal in signals}
+    if {"合成/经营", "花店/装修", "剧情/叙事"} <= labels:
+        return "合成经营 / 花店修复 / 轻剧情休闲"
+    if {"合成/经营", "剧情/叙事"} <= labels:
+        return "合成经营 / 轻剧情休闲"
+    if "花店/装修" in labels:
+        return "花店装修 / 休闲经营"
+    if "休闲/女性向" in labels:
+        return "女性向休闲"
+    if "飞行/射击题材" in labels:
+        return "飞行射击"
+    if "战斗/RPG养成" in labels:
+        return "战斗/RPG养成"
+    if "剧情/叙事" in labels:
+        return "剧情向休闲"
+    return "移动游戏"
+
+
+def target_user_from_signals(signals: list[dict[str, object]]) -> str:
+    labels = {str(signal["label"]) for signal in signals}
+    if "花店/装修" in labels or "休闲/女性向" in labels:
+        return "偏休闲、喜欢合成/装修/经营和轻剧情的女性向或轻度玩家。"
+    if "合成/经营" in labels:
+        return "喜欢轻策略、收集、订单推进和长期经营成长的休闲玩家。"
+    if "剧情/叙事" in labels:
+        return "重视角色关系、剧情推进和自然对白体验的玩家。"
+    return "移动端游戏玩家。"
+
+
+def content_focus_from_signals(signals: list[dict[str, object]]) -> str:
+    labels = {str(signal["label"]) for signal in signals}
+    focus: list[str] = []
+    if "合成/经营" in labels:
+        focus.append("合成、订单、生产、仓库等玩法 UI")
+    if "花店/装修" in labels:
+        focus.append("花店修复、装饰和生活化物件")
+    if "剧情/叙事" in labels:
+        focus.append("角色剧情对话")
+    if "活动/商业化" in labels:
+        focus.append("活动、礼包和奖励")
+    return "；".join(focus) if focus else "系统 UI、玩法说明和剧情文本"
 
 
 def build_translation_prompt(
@@ -1212,32 +1520,26 @@ def build_translation_prompt(
     key_terms: list[str],
     target_coverage: int,
 ) -> str:
-    signal_text = "、".join(str(signal["label"]) for signal in signals) if signals else "未出现强题材信号"
-    category_text = "、".join(f"{name}{count}项" for name, count in categories.most_common(6)) or "暂无稳定术语分类"
-    term_text = "\n".join(f"- {term}" for term in key_terms) if key_terms else "- 使用随附术语表中的 EN/EN2。"
+    project_type = project_type_from_signals(signals)
+    term_rule = "关键术语以随附术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法。"
+    if not key_terms:
+        term_rule = "如未提供术语表，需先从上下文判断固定系统名，保持同一中文术语的英文一致。"
     existing_en_rule = (
-        "已有英文译文代表项目历史用法；如与标准术语不同，先判断是否属于 EN2 手动适配。"
+        "已有英文译文代表项目历史用法；如现有译法不自然，可以优化，但不要破坏已固定的系统术语。"
         if target_coverage
-        else "当前输入可能没有英文列；先按术语表和项目审查提示建立英语风格。"
+        else "当前输入可能没有英文列；先按项目类型和术语表建立统一英语风格。"
     )
     return "\n".join(
         [
-            f"你是一名严谨的游戏出海本地化译员，正在处理《{project_name}》。",
-            f"项目语言表推断信号：{signal_text}。",
-            f"术语分布重点：{category_text}。",
-            "",
-            "翻译目标：输出自然、准确、适配移动游戏 UI 的英文；系统名和数值机制优先一致，活动和商业化文案可以略有吸引力但不能夸张。",
-            "",
-            "翻译规则：",
-            "1. 优先遵守术语表：EN 是标准译法，EN2 是真实项目中稳定出现的手动适配译法。",
-            f"2. {existing_en_rule}",
-            "3. UI 按钮使用短动词或短动词短语；系统、道具、技能、建筑名保持名词化和大小写一致。",
-            "4. 战斗属性、概率、奖励、时间、等级、货币等数值相关文本必须精确，不擅自增减含义。",
-            "5. 保留所有变量、数字、换行、颜色标签、HTML/富文本标签和占位符。",
-            "6. 若同一中文术语已有固定译法，不要为了句式变化改写成另一套英文。",
-            "",
-            "优先关注术语：",
-            term_text,
+            f"你是一位资深游戏本地化译者，正在翻译《{project_name}》这款{project_type}游戏。",
+            "译文需符合以下要求：",
+            "1. 游戏内容/UI/玩法说明尽量精简，适配移动游戏按钮、弹窗、任务、道具和奖励说明；",
+            "2. 剧情对话必须自然、地道、通顺，参考美剧日常对白节奏，保留角色语气、冲突、幽默和情绪，不要逐字直译；",
+            "3. 风格偏轻松、温暖、生活化；涉及花店、装修、订单、合成、经营时避免硬核或过度严肃的表达；",
+            f"4. {term_rule}",
+            f"5. {existing_en_rule}",
+            "6. 保留所有游戏代码、变量、数字、换行、颜色标签、HTML/富文本标签和占位符，如 {0}、%s、<color> 等；",
+            "7. 无法确认的专有名词或信息缺口用 [TBD] 标记，不要自行编造设定。",
         ]
     )
 
@@ -1252,12 +1554,12 @@ def build_project_brief(
 ) -> tuple[str, str]:
     source_rows = len(records)
     target_coverage = sum(1 for record in records if record.target)
-    target_ratio = f"{target_coverage / source_rows:.1%}" if source_rows else "0.0%"
-    average_source_length = f"{sum(len(record.source) for record in records) / source_rows:.1f}" if source_rows else "0.0"
     signals = infer_project_signals(records)
     categories = category_distribution(glossary_rows or all_rows)
-    samples = source_samples(records, signals)
     key_terms = top_terms(glossary_rows or all_rows)
+    project_type = project_type_from_signals(signals)
+    target_user = target_user_from_signals(signals)
+    content_focus = content_focus_from_signals(signals)
     prompt = build_translation_prompt(
         project_name=project_name,
         signals=signals,
@@ -1266,64 +1568,29 @@ def build_project_brief(
         target_coverage=target_coverage,
     )
 
-    signal_rows = [
-        [signal["label"], signal["hit_rows"], signal["evidence"]]
-        for signal in signals
-    ] or [["未发现强信号", 0, "建议人工补充项目简介"]]
-    category_rows = [
-        [category, count]
-        for category, count in categories.most_common()
-    ] or [["暂无", 0]]
-    guidance_lines = "\n".join(f"- {line}" for line in style_guidance(signals, categories, target_coverage))
-    sample_lines = "\n".join(f"- {sample}" for sample in samples) if samples else "- 语言表中未抽到足够短的代表性样例。"
-    term_lines = "\n".join(f"- {term}" for term in key_terms) if key_terms else "- 暂无高优先级术语。"
-
     markdown = "\n".join(
         [
-            f"# {project_name} 项目信息与翻译风格审查",
+            f"# {project_name} 翻译提示词与项目元信息",
             "",
-            "## 输入快照",
+            "## 🤖 AI 生成的专属翻译提示词",
             "",
-            markdown_table(
-                ["项目", "值"],
-                [
-                    ["工作表", sheet_name],
-                    ["语言表行数", source_rows],
-                    ["已有英文行数", f"{target_coverage} ({target_ratio})"],
-                    ["平均原文长度", average_source_length],
-                    ["候选术语数", len(all_rows)],
-                    ["交付术语数", len(glossary_rows)],
-                    ["手动适配术语数", len(manual_rows)],
-                ],
-            ),
-            "",
-            "## 项目内容信号",
-            "",
-            markdown_table(["推断方向", "命中行数", "证据词"], signal_rows),
-            "",
-            "## 代表性原文样例",
-            "",
-            sample_lines,
-            "",
-            "## 术语分布",
-            "",
-            markdown_table(["分类", "术语数"], category_rows),
-            "",
-            "## 翻译风格规则",
-            "",
-            guidance_lines,
-            "",
-            "## 优先关注术语",
-            "",
-            term_lines,
-            "",
-            "## 可复用翻译提示词",
-            "",
-            "```text",
+            "```",
             prompt,
             "```",
             "",
-            "> 本审查由语言表词条和现有译文自动推断，适合作为翻译风格起点；正式交付前仍应由项目负责人确认题材、世界观、人称和专有名词。",
+            "## 📌 项目元信息",
+            "",
+            markdown_table(
+                ["项目", "信息"],
+                [
+                    ["游戏类型", project_type],
+                    ["目标用户", target_user],
+                    ["内容构成", content_focus],
+                    ["翻译风格", "UI/玩法精简适配移动端；剧情自然、地道、通顺，参考美剧日常对白。"],
+                    ["语言资产", f"{source_rows} 条文本，已有英文 {target_coverage} 条。"],
+                    ["生成日期", datetime.now().strftime("%Y-%m-%d")],
+                ],
+            ),
             "",
         ]
     )
@@ -1576,10 +1843,13 @@ def main(argv: list[str] | None = None) -> int:
         observations_store_path=observations_store_path,
     )
     write_final_workbook(output_path=final_output_path, final_rows=final_rows)
+    project_records = records if args.no_project_brief and translation_prompt_output_path is None else (
+        load_project_records(input_path) or records
+    )
     project_brief_markdown, translation_prompt = build_project_brief(
         project_name=project_name,
         sheet_name=sheet_name,
-        records=records,
+        records=project_records,
         all_rows=all_rows,
         glossary_rows=glossary_rows,
         manual_rows=manual_rows,
