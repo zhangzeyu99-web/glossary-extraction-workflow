@@ -127,6 +127,18 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --project-brief-output /path/to/project_brief.md
 ```
 
+可以把额外游戏资料一起纳入 brief 判断，例如项目简介、世界观文档、已有翻译文本、术语表、截图文件名，或由人工观察图片后写成备注：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --project-material /path/to/project_notes.md \
+  --project-material /path/to/reference_terms.xlsx \
+  --project-material /path/to/aircraft_battle_ui.png \
+  --project-note "截图显示深色科幻机库、战机强化和导弹战斗界面。"
+```
+
+`--project-material` 支持重复传入，当前支持 `txt / md / json / csv / tsv / xlsx`，图片文件会使用文件名和目录名作为题材线索；如果需要利用图片画面内容，建议用 `--project-note` 写入人工观察或 OCR 结果。
+
 如果只想额外导出纯提示词：
 
 ```bash

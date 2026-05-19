@@ -196,6 +196,35 @@ class UtilityTests(unittest.TestCase):
         self.assertIn("避免可爱化", prompt)
         self.assertNotIn("花店修复", markdown)
 
+    def test_project_brief_uses_extra_materials_and_notes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            design_doc = temp_path / "setting.md"
+            design_doc.write_text("项目设定：科幻战机、导弹、弹幕射击、英雄装备养成。", encoding="utf-8")
+            screenshot = temp_path / "aircraft_missile_battle_ui.png"
+            screenshot.write_bytes(b"fake-image")
+
+            material_records, material_sources = MODULE.load_project_material_records(
+                material_paths=[design_doc, screenshot],
+                notes=["截图显示深色科幻机库和战机强化界面。"],
+            )
+            records = [MODULE.Record("1", "领取", "Claim")] + material_records
+            markdown, prompt = MODULE.build_project_brief(
+                project_name="Fixture Game",
+                sheet_name="Sheet0",
+                records=records,
+                all_rows=[],
+                glossary_rows=[],
+                manual_rows=[],
+                material_sources=material_sources,
+            )
+
+            self.assertIn("科幻战机 / 飞行射击 / RPG养成", markdown)
+            self.assertIn("信息来源", markdown)
+            self.assertIn("setting.md", markdown)
+            self.assertIn("aircraft_missile_battle_ui.png", markdown)
+            self.assertIn("偏科幻军事", prompt)
+
 
 class MemoryTests(unittest.TestCase):
     def test_preferences_can_block_en2_and_accumulate_observations(self):
@@ -523,6 +552,7 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertIn("译文需符合以下要求", prompt)
             self.assertIn("PROJECT_BRIEF_OUTPUT=", result.stdout)
             self.assertIn("TRANSLATION_PROMPT_OUTPUT=", result.stdout)
+            self.assertIn("PROJECT_MATERIALS=0", result.stdout)
 
             final_workbook = load_workbook(final_path, read_only=True, data_only=True)
             glossary_sheet = final_workbook["Glossary"]

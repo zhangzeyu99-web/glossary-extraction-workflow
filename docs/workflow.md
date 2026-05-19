@@ -34,6 +34,7 @@
 扫描完整语言包时，同步生成项目审查文件，用于指导后续翻译风格：
 
 - 根据词条内容推断题材方向，例如战斗/RPG、基地经营、活动商业化、社交公会、飞行射击、末日生存、剧情叙事
+- 可合并额外输入，例如游戏资料、世界观设定、已有翻译文本、术语表、截图文件名、人工图片观察备注
 - 根据项目内容判断翻译重点，例如 UI/玩法需要移动端精简，剧情对话需要自然、地道、通顺
 - 根据已有英文覆盖率判断是否应优先尊重历史译文和手动适配
 - 输出 `*_project_brief_YYYYMMDD.md`，只保留 `AI 生成的专属翻译提示词` 和 `项目元信息`
@@ -44,8 +45,16 @@
 python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --project-name "Project Name" \
   --project-brief-output /path/to/project_brief.md \
+  --project-material /path/to/game_design.md \
+  --project-note "截图显示核心 UI 是深色科幻机库和战机强化界面。" \
   --translation-prompt-output /path/to/translation_prompt.txt
 ```
+
+补充资料处理口径：
+
+- `txt / md / json`：按段落抽取项目描述
+- `csv / tsv / xlsx`：优先按语言表/资料表表头抽取；没有标准表头时拼接每行非空文本作为资料片段
+- 图片：默认使用文件名和目录名作为题材线索；如需利用画面内容，把人工观察或 OCR 文本写进 `--project-note`
 
 如果某次只跑术语、不需要项目审查，可加：
 
