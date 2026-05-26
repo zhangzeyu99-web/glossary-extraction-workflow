@@ -336,6 +336,7 @@ TEXT_MATERIAL_EXTENSIONS = {".txt", ".md", ".markdown", ".json"}
 TABLE_MATERIAL_EXTENSIONS = {".xlsx", ".xlsm"}
 DELIMITED_MATERIAL_EXTENSIONS = {".csv", ".tsv"}
 IMAGE_MATERIAL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+DOCX_MATERIAL_EXTENSIONS = {".docx"}
 
 CATEGORY_LABELS = {
     "rarity": "稀有度/品质",
@@ -1241,6 +1242,23 @@ def records_from_text_material(path: Path) -> list[Record]:
     return records
 
 
+DOCX_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+
+def records_from_docx_material(path: Path) -> list[Record]:
+    with ZipFile(path) as archive:
+        if "word/document.xml" not in archive.namelist():
+            raise ValueError(f"Missing word/document.xml in DOCX file: {path}")
+        root = ET.fromstring(archive.read("word/document.xml"))
+
+    records: list[Record] = []
+    for index, paragraph in enumerate(root.findall(".//w:p", DOCX_NS), start=1):
+        text = clean_text("".join(node.text or "" for node in paragraph.findall(".//w:t", DOCX_NS)))
+        if text:
+            records.append(Record(row_id=f"{path.name}:{index}", source=text, target=""))
+    return records
+
+
 def records_from_delimited_material(path: Path) -> list[Record]:
     delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
     try:
@@ -1298,6 +1316,233 @@ def load_project_material_records(
         records.extend(material_records)
         sources.append(f"{path.name} ({len(material_records)} 条)")
     return records, sources
+
+
+def load_announcement_texts(material_paths: list[Path]) -> str:
+    chunks: list[str] = []
+    for material_path in material_paths:
+        path = Path(material_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Missing announcement material: {path}")
+
+        suffix = path.suffix.lower()
+        if suffix in DOCX_MATERIAL_EXTENSIONS:
+            records = records_from_docx_material(path)
+        elif suffix in TABLE_MATERIAL_EXTENSIONS:
+            records = load_table_material_records(path)
+        elif suffix in DELIMITED_MATERIAL_EXTENSIONS:
+            records = records_from_delimited_material(path)
+        elif suffix in TEXT_MATERIAL_EXTENSIONS:
+            records = records_from_text_material(path)
+        else:
+            records = records_from_text_material(path)
+
+        chunks.extend(record.source for record in records if record.source)
+    return clean_text(" ".join(chunks))
+
+
+def build_announcement_candidate_rows(
+    records: list[Record],
+    curated_rules: dict[str, Any] | None = None,
+    min_hit: int = 1,
+) -> list[dict[str, object]]:
+    curated_rules = curated_rules if curated_rules is not None else new_curated_rules()
+    records_by_term: dict[str, list[Record]] = defaultdict(list)
+    translations_by_term: dict[str, Counter[str]] = defaultdict(Counter)
+    for record in records:
+        term = clean_text(record.source)
+        if not is_valid_term(term):
+            continue
+        records_by_term[term].append(record)
+        if record.target:
+            translations_by_term[term][record.target] += 1
+
+    rows: list[dict[str, object]] = []
+    for term, term_records in records_by_term.items():
+        if len(term_records) < min_hit:
+            continue
+        curated_state = get_curated_term_state(curated_rules, term, create=False)
+        if curated_state.get("ignore"):
+            continue
+
+        approved_en = clean_text(curated_state.get("approved_en"))
+        approved_en2 = "" if curated_state.get("block_en2") else clean_text(curated_state.get("approved_en2"))
+        common_en = translations_by_term[term].most_common(1)[0][0] if translations_by_term[term] else ""
+        en = approved_en or common_en
+        example_record = next((record for record in term_records if record.target == en), term_records[0])
+        rows.append(
+            {
+                "ID": example_record.row_id,
+                "CN": term,
+                "EN": en,
+                "EN2": approved_en2,
+            }
+        )
+    return rows
+
+
+def trim_trailing_empty_columns(headers: list[object], values: list[object] | None = None) -> tuple[list[str], list[object]]:
+    last_index = len(headers) - 1
+    while last_index >= 0 and not clean_text(headers[last_index]):
+        last_index -= 1
+    trimmed_headers = [clean_text(header) for header in headers[: last_index + 1]]
+    raw_values = list(values or [])
+    trimmed_values = raw_values[: len(trimmed_headers)]
+    if len(trimmed_values) < len(trimmed_headers):
+        trimmed_values.extend([""] * (len(trimmed_headers) - len(trimmed_values)))
+    return trimmed_headers, trimmed_values
+
+
+def announcement_candidate_rows_from_sheet_rows(
+    rows: list[list[object]],
+    sheet_title: str,
+    id_column: str,
+    source_column: str,
+    target_column: str,
+    curated_rules: dict[str, Any] | None = None,
+    min_hit: int = 1,
+    source_only: bool = False,
+) -> tuple[list[str], list[dict[str, object]]]:
+    if not rows:
+        return [], []
+    headers, _empty_values = trim_trailing_empty_columns(list(rows[0]))
+    if not headers:
+        return [], []
+    try:
+        id_index = resolve_column_index(headers, id_column)
+        source_index = resolve_column_index(headers, source_column)
+        target_index = None if source_only else resolve_column_index(headers, target_column)
+    except ValueError:
+        return [], []
+
+    curated_rules = curated_rules if curated_rules is not None else new_curated_rules()
+    records_by_term: dict[str, list[tuple[str, str, list[object], str]]] = defaultdict(list)
+    for row_number, row in enumerate(rows[1:], start=2):
+        _headers, values = trim_trailing_empty_columns(headers, list(row))
+        raw_source = "" if source_index >= len(values) else values[source_index]
+        term = clean_text(raw_source)
+        if not is_valid_term(term):
+            continue
+        row_id = "" if id_index >= len(values) or values[id_index] is None else str(values[id_index])
+        if not row_id:
+            row_id = f"{sheet_title}:{row_number}"
+        target = "" if target_index is None or target_index >= len(values) else clean_text(values[target_index])
+        raw_source_text = "" if raw_source is None else str(raw_source).strip()
+        records_by_term[term].append((row_id, target, values, raw_source_text))
+
+    candidate_rows: list[dict[str, object]] = []
+    for term, entries in records_by_term.items():
+        if len(entries) < min_hit:
+            continue
+        curated_state = get_curated_term_state(curated_rules, term, create=False)
+        if curated_state.get("ignore"):
+            continue
+        row_id, target, values, _raw_source_text = next(
+            (entry for entry in entries if entry[3] == term),
+            entries[0],
+        )
+        candidate_rows.append(
+            {
+                "ID": row_id,
+                "CN": term,
+                "EN": target,
+                "EN2": "" if curated_state.get("block_en2") else clean_text(curated_state.get("approved_en2")),
+                "_AnnouncementValues": values,
+            }
+        )
+    return headers, candidate_rows
+
+
+def build_announcement_candidate_rows_from_workbook(
+    input_path: Path,
+    sheet_name: str | None,
+    id_column: str,
+    source_column: str,
+    target_column: str,
+    curated_rules: dict[str, Any] | None = None,
+    min_hit: int = 1,
+    source_only: bool = False,
+) -> tuple[list[str], list[dict[str, object]]]:
+    headers: list[str] = []
+    candidate_rows: list[dict[str, object]] = []
+    try:
+        workbook = load_workbook(input_path, read_only=True, data_only=True)
+        worksheets = [workbook[sheet_name]] if sheet_name else list(workbook.worksheets)
+        for worksheet in worksheets:
+            rows = list(worksheet.iter_rows(values_only=True))
+            sheet_headers, sheet_rows = announcement_candidate_rows_from_sheet_rows(
+                rows=rows,
+                sheet_title=worksheet.title,
+                id_column=id_column,
+                source_column=source_column,
+                target_column=target_column,
+                curated_rules=curated_rules,
+                min_hit=min_hit,
+                source_only=source_only,
+            )
+            if sheet_rows and not headers:
+                headers = sheet_headers
+            candidate_rows.extend(sheet_rows)
+        workbook.close()
+        return headers, candidate_rows
+    except Exception:
+        for raw_sheet_name, rows in iter_raw_xlsx_sheets(input_path):
+            if sheet_name and raw_sheet_name != sheet_name:
+                continue
+            sheet_headers, sheet_rows = announcement_candidate_rows_from_sheet_rows(
+                rows=rows,
+                sheet_title=raw_sheet_name,
+                id_column=id_column,
+                source_column=source_column,
+                target_column=target_column,
+                curated_rules=curated_rules,
+                min_hit=min_hit,
+                source_only=source_only,
+            )
+            if sheet_rows and not headers:
+                headers = sheet_headers
+            candidate_rows.extend(sheet_rows)
+        return headers, candidate_rows
+
+
+def select_announcement_term_rows(
+    term_rows: list[dict[str, object]],
+    announcement_text: str,
+    include_empty: bool = False,
+) -> list[dict[str, object]]:
+    normalized_notice = clean_text(announcement_text)
+    candidates: list[tuple[int, int, int, str, dict[str, object]]] = []
+    spans_by_term: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for row in term_rows:
+        cn = clean_text(row.get("CN"))
+        if not cn:
+            continue
+
+        en = clean_text(row.get("EN")) or clean_text(row.get("EN2"))
+        if not include_empty and not en:
+            continue
+
+        output_row = dict(row)
+        output_row["CN"] = cn
+        output_row["EN"] = en
+        for match in re.finditer(re.escape(cn), normalized_notice):
+            span = (match.start(), match.end())
+            candidates.append((span[0], span[1], -len(cn), cn, output_row))
+            spans_by_term[cn].append(span)
+
+    candidates.sort(key=lambda item: (item[0], item[2], item[3]))
+    selected_spans: list[tuple[int, int]] = []
+    selected_terms: set[str] = set()
+    selected_rows: list[dict[str, object]] = []
+    for start, end, _negative_length, cn, row in candidates:
+        if cn in selected_terms:
+            continue
+        if any(start < selected_end and end > selected_start for selected_start, selected_end in selected_spans):
+            continue
+        selected_spans.extend(spans_by_term.get(cn, [(start, end)]))
+        selected_terms.add(cn)
+        selected_rows.append(row)
+    return selected_rows
 
 
 def load_records(
@@ -1907,6 +2152,50 @@ def write_final_workbook(output_path: Path, final_rows: list[dict[str, object]])
     workbook.close()
 
 
+def display_header_name(header: str, default_header: str) -> str:
+    clean_header = clean_text(header)
+    return default_header if clean_header.lower() == default_header.lower() else clean_header
+
+
+def write_announcement_glossary_workbook(
+    output_path: Path,
+    matched_rows: list[dict[str, object]],
+    id_header: str,
+    source_header: str,
+    target_header: str,
+    headers: list[str] | None = None,
+) -> None:
+    workbook = Workbook()
+    glossary_sheet = workbook.active
+    glossary_sheet.title = "Glossary"
+    output_headers = headers or [
+        display_header_name(id_header, "ID"),
+        display_header_name(source_header, "CN"),
+        display_header_name(target_header, "EN"),
+    ]
+    glossary_sheet.append(output_headers)
+    for row in matched_rows:
+        source_values = row.get("_AnnouncementValues")
+        if isinstance(source_values, list):
+            values = source_values[: len(output_headers)]
+            if len(values) < len(output_headers):
+                values.extend([""] * (len(output_headers) - len(values)))
+            glossary_sheet.append(values)
+        else:
+            glossary_sheet.append(
+                [
+                    row.get("ID", ""),
+                    row.get("CN", ""),
+                    clean_text(row.get("EN")) or clean_text(row.get("EN2")),
+                ]
+            )
+    style_sheet(glossary_sheet)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(output_path)
+    workbook.close()
+
+
 def default_output_paths(input_path: Path, detail_output: str | None, final_output: str | None) -> tuple[Path, Path]:
     date_suffix = datetime.now().strftime("%Y%m%d")
     detail_path = Path(detail_output) if detail_output else input_path.with_name(
@@ -1922,6 +2211,29 @@ def default_project_brief_output_path(input_path: Path, project_brief_output: st
     date_suffix = datetime.now().strftime("%Y%m%d")
     return Path(project_brief_output) if project_brief_output else input_path.with_name(
         f"{input_path.stem}_project_brief_{date_suffix}.md"
+    )
+
+
+def default_announcement_output_path(material_paths: list[Path], announcement_output: str | None) -> Path | None:
+    if announcement_output:
+        return Path(announcement_output)
+    if not material_paths:
+        return None
+    date_suffix = datetime.now().strftime("%Y%m%d")
+    first_material = material_paths[0]
+    return first_material.with_name(f"{first_material.stem}_announcement_terms_{date_suffix}.xlsx")
+
+
+def should_run_announcement_only(args: argparse.Namespace) -> bool:
+    return bool(args.announcement_material) and not any(
+        [
+            args.output,
+            args.final_output,
+            args.project_brief_output,
+            args.translation_prompt_output,
+            args.project_material,
+            args.project_note,
+        ]
     )
 
 
@@ -1990,6 +2302,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable project audit Markdown generation.",
     )
+    parser.add_argument(
+        "--announcement-material",
+        action="append",
+        default=[],
+        help="Version announcement material path. Can be repeated. Supports docx/txt/md/json/csv/tsv/xlsx.",
+    )
+    parser.add_argument(
+        "--announcement-output",
+        help="Path for the announcement-specific glossary workbook output.",
+    )
+    parser.add_argument(
+        "--announcement-min-hit",
+        type=int,
+        default=1,
+        help="Minimum hit count used when matching language-table terms against announcement text. Default: 1",
+    )
     return parser
 
 
@@ -2007,6 +2335,12 @@ def main(argv: list[str] | None = None) -> int:
         project_brief_output=args.project_brief_output,
     )
     translation_prompt_output_path = Path(args.translation_prompt_output) if args.translation_prompt_output else None
+    announcement_material_paths = [Path(path) for path in args.announcement_material]
+    announcement_output_path = default_announcement_output_path(
+        material_paths=announcement_material_paths,
+        announcement_output=args.announcement_output,
+    )
+    announcement_only = should_run_announcement_only(args)
     curated_rules_path = Path(args.curated_rules) if args.curated_rules else None
     observations_store_path = Path(args.observations_store) if args.observations_store else None
     curated_rules = load_curated_rules(curated_rules_path)
@@ -2021,6 +2355,53 @@ def main(argv: list[str] | None = None) -> int:
         target_column=args.target_column,
         source_only=args.source_only,
     )
+    if announcement_only and announcement_output_path is not None:
+        announcement_headers, announcement_candidate_rows = build_announcement_candidate_rows_from_workbook(
+            input_path=input_path,
+            sheet_name=args.sheet,
+            id_column=args.id_column,
+            source_column=args.source_column,
+            target_column=args.target_column,
+            min_hit=args.announcement_min_hit,
+            curated_rules=curated_rules,
+            source_only=args.source_only,
+        )
+        if not announcement_candidate_rows:
+            announcement_records = load_project_records(input_path) or records
+            announcement_candidate_rows = build_announcement_candidate_rows(
+                records=announcement_records,
+                min_hit=args.announcement_min_hit,
+                curated_rules=curated_rules,
+            )
+        announcement_text = load_announcement_texts(announcement_material_paths)
+        announcement_rows = select_announcement_term_rows(
+            term_rows=announcement_candidate_rows,
+            announcement_text=announcement_text,
+            include_empty=args.include_empty_final_terms,
+        )
+        write_announcement_glossary_workbook(
+            output_path=announcement_output_path,
+            matched_rows=announcement_rows,
+            id_header=args.id_column,
+            source_header=args.source_column,
+            target_header=args.target_column,
+            headers=announcement_headers,
+        )
+
+        print(f"INPUT={input_path}")
+        print("DETAIL_OUTPUT=disabled")
+        print("FINAL_OUTPUT=disabled")
+        print("PROJECT_BRIEF_OUTPUT=disabled")
+        print("TRANSLATION_PROMPT_OUTPUT=disabled")
+        print(f"ANNOUNCEMENT_OUTPUT={announcement_output_path}")
+        print(f"ANNOUNCEMENT_MATERIALS={len(announcement_material_paths)}")
+        print(f"ANNOUNCEMENT_TERMS={len(announcement_rows)}")
+        print(f"CURATED_RULES={curated_rules_path or 'disabled'}")
+        print(f"OBSERVATIONS_STORE={observations_store_path or 'disabled'}")
+        print(f"SHEET={sheet_name}")
+        print(f"RECORDS={len(records)}")
+        return 0
+
     all_rows, glossary_rows, high_risk_rows, manual_rows, final_rows = build_term_rows(
         records=records,
         min_hit=args.min_hit,
@@ -2063,6 +2444,41 @@ def main(argv: list[str] | None = None) -> int:
         write_text_output(project_brief_output_path, project_brief_markdown)
     if translation_prompt_output_path is not None:
         write_text_output(translation_prompt_output_path, translation_prompt)
+
+    announcement_rows: list[dict[str, object]] = []
+    if announcement_material_paths and announcement_output_path is not None:
+        announcement_headers, announcement_candidate_rows = build_announcement_candidate_rows_from_workbook(
+            input_path=input_path,
+            sheet_name=args.sheet,
+            id_column=args.id_column,
+            source_column=args.source_column,
+            target_column=args.target_column,
+            min_hit=args.announcement_min_hit,
+            curated_rules=curated_rules,
+            source_only=args.source_only,
+        )
+        if not announcement_candidate_rows:
+            announcement_records = load_project_records(input_path) or records
+            announcement_candidate_rows = build_announcement_candidate_rows(
+                records=announcement_records,
+                min_hit=args.announcement_min_hit,
+                curated_rules=curated_rules,
+            )
+        announcement_text = load_announcement_texts(announcement_material_paths)
+        announcement_rows = select_announcement_term_rows(
+            term_rows=announcement_candidate_rows,
+            announcement_text=announcement_text,
+            include_empty=args.include_empty_final_terms,
+        )
+        write_announcement_glossary_workbook(
+            output_path=announcement_output_path,
+            matched_rows=announcement_rows,
+            id_header=args.id_column,
+            source_header=args.source_column,
+            target_header=args.target_column,
+            headers=announcement_headers,
+        )
+
     save_curated_rules(curated_rules_path, curated_rules)
     save_observation_store(observations_store_path, observations_store)
 
@@ -2071,6 +2487,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"FINAL_OUTPUT={final_output_path}")
     print(f"PROJECT_BRIEF_OUTPUT={project_brief_output_path if not args.no_project_brief else 'disabled'}")
     print(f"TRANSLATION_PROMPT_OUTPUT={translation_prompt_output_path or 'disabled'}")
+    print(f"ANNOUNCEMENT_OUTPUT={announcement_output_path if announcement_output_path else 'disabled'}")
+    print(f"ANNOUNCEMENT_MATERIALS={len(announcement_material_paths)}")
+    print(f"ANNOUNCEMENT_TERMS={len(announcement_rows)}")
     print(f"PROJECT_MATERIALS={len(material_sources)}")
     print(f"CURATED_RULES={curated_rules_path or 'disabled'}")
     print(f"OBSERVATIONS_STORE={observations_store_path or 'disabled'}")

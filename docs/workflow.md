@@ -108,6 +108,36 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 
 分类整理版主表使用 `ID / CN / EN / EN2 / 分类`，并将 `分类` 放在最后一列。同类术语应连续排列，便于翻译、LQA 和术语管理员筛选。完整复盘见 [source-only delivery retrospective](source-only-delivery-retrospective.md)。
 
+### 5.1 版更公告按需术语提取
+
+当输入是版更公告、活动公告、更新说明等长文本时，不需要重新导出完整术语表。可以用公告文本反查完整语言表，只输出公告实际用到的术语行，并保留完整语言表中的全部语言列：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --announcement-material /path/to/update_notice.docx \
+  --announcement-output /path/to/update_notice_terms.xlsx
+```
+
+公告命令未显式传入 `--output`、`--final-output`、`--project-brief-output` 或项目资料参数时，会自动跳过完整术语明细、最终术语表和 project brief，只生成公告术语表。
+
+公告资料支持 `docx / txt / md / json / csv / tsv / xlsx`，可以重复传入：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --announcement-material /path/to/event_notice.xlsx \
+  --announcement-output /path/to/announcement_terms.xlsx \
+  --announcement-min-hit 1
+```
+
+处理口径：
+
+- 先从完整语言表中按术语级候选提取，不直接输出整句语言表行
+- 用中文公告文本做精确包含匹配，按公告首次出现位置排序，同位置长词优先
+- 输出单 sheet `Glossary`，列结构沿用完整语言表表头，例如 `ID / CN / EN / FR / DE / RU / IT / ES / PT / ...`
+- 默认只输出有英文译文的术语；需要保留空 EN 候选时，加 `--include-empty-final-terms`
+- `.docx` 只读取正文文本，不读取批注、修订记录或图片 OCR
+
 ### 6. 示例与手动适配拆分
 
 拆分原则：

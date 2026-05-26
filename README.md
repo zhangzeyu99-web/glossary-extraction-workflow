@@ -153,7 +153,31 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --no-project-brief
 ```
 
-### 5. 产物说明
+### 5. 版更公告按需术语提取
+
+当需要翻译版更公告、活动公告或长篇更新说明时，可以用公告文本反查完整语言表中的术语，只导出公告实际用到的术语行，并保留完整语言表中的全部语言列：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --announcement-material /path/to/update_notice.docx \
+  --announcement-output /path/to/update_notice_terms.xlsx
+```
+
+如果没有同时指定 `--output`、`--final-output`、`--project-brief-output` 或补充项目资料参数，脚本会自动进入公告专用模式，只生成公告术语表，避免为大语言表额外生成完整明细表。
+
+公告资料可以重复传入，支持 `docx / txt / md / json / csv / tsv / xlsx`：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --announcement-material /path/to/event_notes.xlsx \
+  --announcement-output /path/to/announcement_terms.xlsx \
+  --announcement-min-hit 1
+```
+
+输出 workbook 只有一个 `Glossary` sheet，列结构沿用完整语言表表头，例如 `ID / CN / EN / FR / DE / RU / IT / ES / PT / ...`。默认不输出缺少英文译文的术语，如需保留空译文候选，可加 `--include-empty-final-terms`。
+
+### 6. 产物说明
 
 脚本默认在输入文件同目录输出两份 Excel：
 
@@ -163,6 +187,8 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   干净交付版，只保留 `ID / CN / EN / EN2`
 - `*_project_brief_YYYYMMDD.md`
   精简项目 brief，用于给译员、LQA 或翻译模型快速建立项目语气和术语使用边界
+- `*_announcement_terms_YYYYMMDD.xlsx`
+  版更公告按需术语表，只保留公告中实际出现的术语行，并保留完整语言表中的全部语言列
 
 同时会更新：
 
@@ -171,7 +197,7 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 - `data/experience/observed_terms.json`
   自动观察层，保存历史出现过的候选、手动适配、命中次数和上次输入指纹
 
-### 6. 回灌人工确认结果
+### 7. 回灌人工确认结果
 
 当你已经拿到人工确认过的最终交付表，可以直接回灌到人工规则层：
 

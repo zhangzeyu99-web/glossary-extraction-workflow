@@ -7,6 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 import unittest
+from zipfile import ZipFile
 
 from openpyxl import Workbook, load_workbook
 
@@ -18,6 +19,21 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+def write_minimal_docx(path: Path, paragraphs: list[str]) -> None:
+    body = "".join(
+        f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>"
+        for paragraph in paragraphs
+    )
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body>"
+        "</w:document>"
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("word/document.xml", document_xml)
 
 
 class UtilityTests(unittest.TestCase):
@@ -224,6 +240,96 @@ class UtilityTests(unittest.TestCase):
             self.assertIn("setting.md", markdown)
             self.assertIn("aircraft_missile_battle_ui.png", markdown)
             self.assertIn("偏科幻军事", prompt)
+
+    def test_records_from_docx_material_reads_body_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            docx_path = Path(temp_dir) / "notice.docx"
+            write_minimal_docx(docx_path, ["新增秘境玩法", "开放纹章系统"])
+
+            records = MODULE.records_from_docx_material(docx_path)
+
+            self.assertEqual([record.source for record in records], ["新增秘境玩法", "开放纹章系统"])
+
+    def test_select_announcement_term_rows_matches_notice_terms_with_translations(self):
+        records = [
+            MODULE.Record("T1", "秘境", "Trial Realm"),
+            MODULE.Record("T2", "纹章", "Emblem"),
+            MODULE.Record("T3", "商城", "Shop"),
+        ]
+        all_rows, _glossary_rows, _high_risk_rows, _manual_rows, _final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="announcement-match-fixture",
+        )
+
+        matched = MODULE.select_announcement_term_rows(
+            term_rows=all_rows,
+            announcement_text="新增秘境和纹章系统",
+            include_empty=False,
+        )
+
+        self.assertEqual([row["CN"] for row in matched], ["秘境", "纹章"])
+        self.assertEqual([row["EN"] for row in matched], ["Trial Realm", "Emblem"])
+
+    def test_select_announcement_term_rows_orders_by_first_position_and_suppresses_overlaps(self):
+        records = [
+            MODULE.Record("T1", "试炼", "Trial"),
+            MODULE.Record("T2", "试炼秘境", "Trial Realm"),
+            MODULE.Record("T3", "秘境", "Realm"),
+        ]
+        all_rows, _glossary_rows, _high_risk_rows, _manual_rows, _final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="announcement-order-fixture",
+        )
+
+        matched = MODULE.select_announcement_term_rows(
+            term_rows=all_rows,
+            announcement_text="新增试炼秘境玩法，秘境奖励提升",
+            include_empty=False,
+        )
+
+        self.assertEqual([row["CN"] for row in matched], ["试炼秘境", "秘境"])
+
+    def test_select_announcement_term_rows_suppresses_later_repeated_subterms(self):
+        records = [
+            MODULE.Record("T1", "新大陆", "Newland"),
+            MODULE.Record("T2", "大陆", "Continent"),
+        ]
+        rows = MODULE.build_announcement_candidate_rows(
+            records=records,
+            curated_rules=MODULE.new_curated_rules(),
+            min_hit=1,
+        )
+
+        matched = MODULE.select_announcement_term_rows(
+            term_rows=rows,
+            announcement_text="新大陆开放，新大陆主城显示优化",
+            include_empty=False,
+        )
+
+        self.assertEqual([row["CN"] for row in matched], ["新大陆"])
+
+    def test_load_announcement_texts_reads_xlsx_cells(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "notice.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Notice"
+            worksheet.append(["公告"])
+            worksheet.append(["新增纹章系统"])
+            workbook.save(workbook_path)
+            workbook.close()
+
+            text = MODULE.load_announcement_texts([workbook_path])
+
+            self.assertIn("新增纹章系统", text)
 
 
 class MemoryTests(unittest.TestCase):
@@ -563,6 +669,207 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(lookup["升级"][2], "Level Up")
             self.assertEqual(lookup["升级"][3], "Upgrade")
             final_workbook.close()
+
+    def test_cli_generates_announcement_term_workbook(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "language_table.xlsx"
+            notice_path = temp_path / "notice.txt"
+            detail_path = temp_path / "detail.xlsx"
+            final_path = temp_path / "final.xlsx"
+            announcement_output = temp_path / "announcement_terms.xlsx"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Sheet0"
+            worksheet.append(["ID", "CN", "EN"])
+            worksheet.append(["T1", "秘境", "Trial Realm"])
+            worksheet.append(["T2", "纹章", "Emblem"])
+            worksheet.append(["T3", "商城", "Shop"])
+            workbook.save(input_path)
+            workbook.close()
+            notice_path.write_text("本次更新新增秘境和纹章系统。", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--output",
+                    str(detail_path),
+                    "--final-output",
+                    str(final_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--no-project-brief",
+                    "--min-hit",
+                    "1",
+                    "--glossary-hit-threshold",
+                    "1",
+                    "--announcement-material",
+                    str(notice_path),
+                    "--announcement-output",
+                    str(announcement_output),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertIn("ANNOUNCEMENT_OUTPUT=", result.stdout)
+            self.assertIn("ANNOUNCEMENT_TERMS=2", result.stdout)
+
+            final_workbook = load_workbook(announcement_output, read_only=True, data_only=True)
+            rows = list(final_workbook["Glossary"].iter_rows(values_only=True))
+            self.assertEqual(rows[0], ("ID", "CN", "EN"))
+            self.assertEqual(rows[1:], [("T1", "秘境", "Trial Realm"), ("T2", "纹章", "Emblem")])
+            final_workbook.close()
+
+    def test_cli_announcement_term_workbook_preserves_all_language_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "language_table.xlsx"
+            notice_path = temp_path / "notice.txt"
+            announcement_output = temp_path / "announcement_terms.xlsx"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Sheet0"
+            worksheet.append(["ID", "CN", "EN", "FR", "DE", "ID", "TH"])
+            worksheet.append(["T1", "秘境", "Trial Realm", "Royaume d'épreuve", "Prüfungsreich", "Alam Ujian", "แดนทดสอบ"])
+            worksheet.append(["T2", "纹章", "Emblem", "Emblème", "Emblem", "Lambang", "ตราสัญลักษณ์"])
+            worksheet.append(["T3", "商城", "Shop", "Boutique", "Shop", "Toko", "ร้านค้า"])
+            workbook.save(input_path)
+            workbook.close()
+            notice_path.write_text("新增秘境和纹章系统。", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--announcement-material",
+                    str(notice_path),
+                    "--announcement-output",
+                    str(announcement_output),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            output_workbook = load_workbook(announcement_output, read_only=True, data_only=True)
+            rows = list(output_workbook["Glossary"].iter_rows(values_only=True))
+            self.assertEqual(rows[0], ("ID", "CN", "EN", "FR", "DE", "ID", "TH"))
+            self.assertEqual(rows[1], ("T1", "秘境", "Trial Realm", "Royaume d'épreuve", "Prüfungsreich", "Alam Ujian", "แดนทดสอบ"))
+            self.assertEqual(rows[2], ("T2", "纹章", "Emblem", "Emblème", "Emblem", "Lambang", "ตราสัญลักษณ์"))
+            output_workbook.close()
+
+    def test_cli_announcement_term_workbook_prefers_clean_standalone_term_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "language_table.xlsx"
+            notice_path = temp_path / "notice.txt"
+            announcement_output = temp_path / "announcement_terms.xlsx"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Sheet0"
+            worksheet.append(["ID", "CN", "EN", "FR"])
+            worksheet.append(["T1", "{0}结束", "{0} Ended", "Terminé : {0}"])
+            worksheet.append(["T2", "结束", "Ended", "Terminé"])
+            workbook.save(input_path)
+            workbook.close()
+            notice_path.write_text("维护结束后发放奖励。", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--announcement-material",
+                    str(notice_path),
+                    "--announcement-output",
+                    str(announcement_output),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            output_workbook = load_workbook(announcement_output, read_only=True, data_only=True)
+            rows = list(output_workbook["Glossary"].iter_rows(values_only=True))
+            self.assertEqual(rows[1], ("T2", "结束", "Ended", "Terminé"))
+            output_workbook.close()
+
+    def test_cli_announcement_only_skips_full_glossary_outputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "language_table.xlsx"
+            notice_path = temp_path / "notice.txt"
+            announcement_output = temp_path / "announcement_terms.xlsx"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Sheet0"
+            worksheet.append(["ID", "CN", "EN"])
+            worksheet.append(["T1", "秘境", "Trial Realm"])
+            worksheet.append(["T2", "纹章", "Emblem"])
+            workbook.save(input_path)
+            workbook.close()
+            notice_path.write_text("新增秘境玩法。", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--announcement-material",
+                    str(notice_path),
+                    "--announcement-output",
+                    str(announcement_output),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertIn("DETAIL_OUTPUT=disabled", result.stdout)
+            self.assertIn("FINAL_OUTPUT=disabled", result.stdout)
+            self.assertIn("ANNOUNCEMENT_TERMS=1", result.stdout)
+            self.assertTrue(announcement_output.exists())
+            self.assertEqual(list(temp_path.glob("*_glossary_details_*.xlsx")), [])
+            self.assertEqual(list(temp_path.glob("*_ID_CN_EN_EN2_*.xlsx")), [])
 
 
 if __name__ == "__main__":
