@@ -870,6 +870,157 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertTrue(announcement_output.exists())
             self.assertEqual(list(temp_path.glob("*_glossary_details_*.xlsx")), [])
             self.assertEqual(list(temp_path.glob("*_ID_CN_EN_EN2_*.xlsx")), [])
+            self.assertEqual(list(temp_path.glob("*_announcement_validation_*.md")), [])
+
+    def test_announcement_candidate_rows_auto_detects_export_header_after_metadata(self):
+        rows = [
+            ["0", None, None],
+            ["\u8bed\u8a00\u603b\u8868", None, None],
+            ["\u7d22\u5f15ID", "\u5185\u5bb9", "\u4e2d\u6587\uff0c\u7528\u4e8e\u5bfc\u51fa\uff08\u4e0d\u8981\u5728\u539f\u8868\u7b80\u8f6c\u7e41\uff09"],
+            ["1*1", "stack_error,n_list", ""],
+            ["id", "text", ""],
+            ["int", "string", ""],
+            ["1001", "Trial Realm", "\u79d8\u5883"],
+            ["1002", "Emblem", "\u7eb9\u7ae0"],
+        ]
+
+        headers, candidate_rows = MODULE.announcement_candidate_rows_from_sheet_rows(
+            rows=rows,
+            sheet_title="out_language_en",
+            id_column="ID",
+            source_column="CN",
+            target_column="EN",
+            curated_rules=MODULE.new_curated_rules(),
+            min_hit=1,
+        )
+
+        self.assertEqual(headers, ["ID", "CN", "EN"])
+        self.assertEqual([row["CN"] for row in candidate_rows], ["\u79d8\u5883", "\u7eb9\u7ae0"])
+        self.assertEqual(candidate_rows[0]["_AnnouncementValues"], ["1001", "\u79d8\u5883", "Trial Realm"])
+
+    def test_announcement_candidate_rows_extracts_json_wrapped_terms(self):
+        rows = [
+            ["ID", "CN", "KR"],
+            ["A1", "[\"\u5e7b\u620f\u793c\u5305\"]", "[\"\ud658\uc0c1\uadf9 \ud328\ud0a4\uc9c0\"]"],
+            ["A2", "[\"\u72c2\u6b22\u591c\u5178\",\"#FFFCDC\"]", "[\"\ubc24\uc758 \ucd95\uc81c\",\"#FFFCDC\"]"],
+            [
+                "A3",
+                "[[\"\u4e94   \u8be1\u620f\u5386\u9669\",\"\u73a9\u6cd5\u8bf4\u660e\"]]",
+                "[[\"5   \uc18d\uc784\uc218 \ubaa8\ud5d8\",\"\ucf58\ud150\uce20 \uc124\uba85\"]]",
+            ],
+        ]
+
+        headers, candidate_rows = MODULE.announcement_candidate_rows_from_sheet_rows(
+            rows=rows,
+            sheet_title="config",
+            id_column="ID",
+            source_column="CN",
+            target_column="KR",
+            curated_rules=MODULE.new_curated_rules(),
+            min_hit=1,
+        )
+
+        self.assertEqual(headers, ["ID", "CN", "KR"])
+        lookup = {row["CN"]: row for row in candidate_rows}
+        self.assertEqual(lookup["\u5e7b\u620f\u793c\u5305"]["_AnnouncementValues"], ["A1", "\u5e7b\u620f\u793c\u5305", "\ud658\uc0c1\uadf9 \ud328\ud0a4\uc9c0"])
+        self.assertEqual(lookup["\u72c2\u6b22\u591c\u5178"]["_AnnouncementValues"], ["A2", "\u72c2\u6b22\u591c\u5178", "\ubc24\uc758 \ucd95\uc81c"])
+        self.assertEqual(lookup["\u8be1\u620f\u5386\u9669"]["_AnnouncementValues"], ["A3", "\u8be1\u620f\u5386\u9669", "\uc18d\uc784\uc218 \ubaa8\ud5d8"])
+
+    def test_select_announcement_term_rows_demotes_low_value_terms_without_dropping_them(self):
+        term_rows = [
+            {"ID": "T1", "CN": "\u73a9\u5bb6", "EN": "Player"},
+            {"ID": "T2", "CN": "\u67e5\u770b", "EN": "View"},
+            {"ID": "T3", "CN": "\u822a\u6d77\u8d5b\u5b63", "EN": "Sail Season"},
+        ]
+
+        matched = MODULE.select_announcement_term_rows(
+            term_rows=term_rows,
+            announcement_text="\u73a9\u5bb6\u53ef\u67e5\u770b\u822a\u6d77\u8d5b\u5b63",
+            include_empty=False,
+        )
+
+        self.assertEqual([row["CN"] for row in matched], ["\u822a\u6d77\u8d5b\u5b63", "\u73a9\u5bb6", "\u67e5\u770b"])
+
+    def test_cli_generates_multilingual_announcement_terms_and_validation_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            en_path = temp_path / "language_en.xlsx"
+            fr_path = temp_path / "language_fr.xlsx"
+            notice_path = temp_path / "notice.txt"
+            announcement_output = temp_path / "announcement_terms.xlsx"
+            validation_output = temp_path / "announcement_validation.md"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            for workbook_path, translations in [
+                (en_path, {"\u79d8\u5883": "Trial Realm", "\u7eb9\u7ae0": "Emblem", "\u73a9\u5bb6": "Player"}),
+                (fr_path, {"\u79d8\u5883": "Royaume d'epreuve", "\u7eb9\u7ae0": "Embleme", "\u73a9\u5bb6": "Joueur"}),
+            ]:
+                workbook = Workbook()
+                worksheet = workbook.active
+                worksheet.title = "out_language"
+                worksheet.append(["0", None, None])
+                worksheet.append(["\u8bed\u8a00\u603b\u8868", None, None])
+                worksheet.append(["\u7d22\u5f15ID", "\u5185\u5bb9", "\u4e2d\u6587\uff0c\u7528\u4e8e\u5bfc\u51fa\uff08\u4e0d\u8981\u5728\u539f\u8868\u7b80\u8f6c\u7e41\uff09"])
+                worksheet.append(["1*1", "stack_error,n_list", ""])
+                worksheet.append(["id", "text", ""])
+                worksheet.append(["int", "string", ""])
+                for index, (cn, target) in enumerate(translations.items(), start=1001):
+                    worksheet.append([str(index), target, cn])
+                workbook.save(workbook_path)
+                workbook.close()
+
+            notice_path.write_text(
+                "\u65b0\u589e\u79d8\u5883\u548c\u7eb9\u7ae0\u7cfb\u7edf\uff0c\u73a9\u5bb6\u53ef\u67e5\u770b\u79d8\u5883\u5956\u52b1\u3002",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--language-table",
+                    f"EN={en_path}",
+                    "--language-table",
+                    f"FR={fr_path}",
+                    "--announcement-material",
+                    str(notice_path),
+                    "--announcement-output",
+                    str(announcement_output),
+                    "--announcement-validation-output",
+                    str(validation_output),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertIn("ANNOUNCEMENT_TERMS=3", result.stdout)
+            self.assertTrue(validation_output.exists())
+
+            output_workbook = load_workbook(announcement_output, read_only=True, data_only=True)
+            rows = list(output_workbook["Glossary"].iter_rows(values_only=True))
+            self.assertEqual(rows[0], ("ID", "CN", "EN", "FR"))
+            self.assertEqual(
+                rows[1:],
+                [
+                    ("1001", "\u79d8\u5883", "Trial Realm", "Royaume d'epreuve"),
+                    ("1002", "\u7eb9\u7ae0", "Emblem", "Embleme"),
+                    ("1003", "\u73a9\u5bb6", "Player", "Joueur"),
+                ],
+            )
+            output_workbook.close()
+
+            validation_text = validation_output.read_text(encoding="utf-8")
+            self.assertIn("term_count: 3", validation_text)
+            self.assertIn("duplicate_cn: 0", validation_text)
+            self.assertIn("empty_translation_cells: 0", validation_text)
 
 
 if __name__ == "__main__":

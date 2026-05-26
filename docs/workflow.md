@@ -120,6 +120,8 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 
 公告命令未显式传入 `--output`、`--final-output`、`--project-brief-output` 或项目资料参数时，会自动跳过完整术语明细、最终术语表和 project brief，只生成公告术语表。
 
+脚本会扫描语言表前若干行自动定位表头；常见导出型总表如 `索引ID / 内容 / 中文，用于导出...` 会自动映射为 `ID / CN / EN`，不需要先手动删除导出元数据行。对于 `["活动名"]`、`["活动名", "#色值"]`、嵌套帮助列表标题等非规范单元格，也会提取干净术语和对应译文。
+
 公告资料支持 `docx / txt / md / json / csv / tsv / xlsx`，可以重复传入：
 
 ```bash
@@ -130,11 +132,24 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --announcement-min-hit 1
 ```
 
+多语言公告术语表使用显式语言码传入，输出一张合并后的 `Glossary`：
+
+```bash
+python scripts/extract_glossary.py \
+  --language-table EN=/path/to/language_en.xlsx \
+  --language-table FR=/path/to/language_fr.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --announcement-output /path/to/announcement_terms.xlsx
+```
+
 处理口径：
 
 - 先从完整语言表中按术语级候选提取，不直接输出整句语言表行
 - 用中文公告文本做精确包含匹配，按公告首次出现位置排序，同位置长词优先
 - 输出单 sheet `Glossary`，列结构沿用完整语言表表头，例如 `ID / CN / EN / FR / DE / RU / IT / ES / PT / ...`
+- 多语言模式输出 `ID / CN / EN / FR...`，以 CN 精确合并；同一 CN 多个 ID 时使用第一个语言表的首个命中 ID
+- 低价值通用词只降级排序，不默认删除，避免漏掉固定 UI 译法
+- 默认只生成术语译文交付表；如需内部审计，可显式传 `--announcement-validation-output /path/to/announcement_validation.md` 生成 validation Markdown
 - 默认只输出有英文译文的术语；需要保留空 EN 候选时，加 `--include-empty-final-terms`
 - `.docx` 只读取正文文本，不读取批注、修订记录或图片 OCR
 

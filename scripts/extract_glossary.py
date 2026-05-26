@@ -37,6 +37,24 @@ NON_TERM_RE = re.compile(r"^[\W_]+$|^[IVXⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$")
 CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
 EN_COMPARE_RE = re.compile(r"[^a-z0-9+ ]+")
 EN_WORD_RE = re.compile(r"[a-z0-9+]+")
+NUMBERED_TITLE_RE = re.compile(r"^\s*(?:[0-9]+|[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*[\u3001.．\s-]+")
+HEADER_SCAN_LIMIT = 50
+
+AUTO_ID_HEADERS = ["ID", "id", "\u7d22\u5f15ID", "\u552f\u4e00\u6807\u8bc6ID"]
+AUTO_SOURCE_HEADERS = ["CN", "cn", "zh", "source", "Chinese", "\u4e2d\u6587", "\u7b80\u4f53\u4e2d\u6587", "ori_string"]
+AUTO_TARGET_HEADERS = ["EN", "en", "target", "translation", "English", "\u82f1\u6587", "\u82f1\u8bed", "\u5185\u5bb9", "text"]
+LOW_VALUE_ANNOUNCEMENT_TERMS = {
+    "\u73a9\u5bb6",
+    "\u6d3b\u52a8",
+    "\u4e16\u754c",
+    "\u8d2d\u4e70",
+    "\u53d1\u9001",
+    "\u67e5\u770b",
+    "\u83b7\u5f97",
+    "\u5956\u52b1",
+    "\u9884\u544a",
+    "\u7cfb\u7edf",
+}
 
 RARITY_TERMS = {
     "普通",
@@ -357,6 +375,22 @@ class Record:
     target: str
 
 
+@dataclass
+class SheetColumnLayout:
+    header_row_index: int
+    headers: list[str]
+    id_index: int
+    source_index: int
+    target_index: int | None
+    output_indexes: list[int]
+
+
+@dataclass
+class LanguageTableSpec:
+    language: str
+    path: Path
+
+
 def clean_text(value: object) -> str:
     text = "" if value is None else str(value)
     text = html.unescape(text)
@@ -514,6 +548,55 @@ def is_valid_term(term: str) -> bool:
     if term.startswith(("+", "-", "/", "%")) or term.endswith(("+", "-", "/", "%")):
         return False
     return True
+
+
+def strip_numbered_title_prefix(value: object) -> str:
+    return clean_text(NUMBERED_TITLE_RE.sub("", "" if value is None else str(value)).strip())
+
+
+def parse_json_like_value(value: object) -> Any | None:
+    text = "" if value is None else str(value).strip()
+    if not text.startswith("["):
+        return None
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def first_string_from_json_like(value: object) -> str:
+    parsed = parse_json_like_value(value)
+    if isinstance(parsed, list) and parsed and isinstance(parsed[0], str):
+        return strip_numbered_title_prefix(parsed[0])
+    return clean_text(value)
+
+
+def extract_structured_term_pairs(raw_source: object, raw_target: object) -> list[tuple[str, str]]:
+    parsed_source = parse_json_like_value(raw_source)
+    parsed_target = parse_json_like_value(raw_target)
+    if not isinstance(parsed_source, list):
+        return [(clean_text(raw_source), clean_text(raw_target))]
+
+    pairs: list[tuple[str, str]] = []
+    if parsed_source and isinstance(parsed_source[0], str):
+        term = strip_numbered_title_prefix(parsed_source[0])
+        target = first_string_from_json_like(raw_target)
+        if is_valid_term(term):
+            pairs.append((term, target))
+
+    for index, source_item in enumerate(parsed_source):
+        if not (isinstance(source_item, list) and source_item and isinstance(source_item[0], str)):
+            continue
+        term = strip_numbered_title_prefix(source_item[0])
+        target = ""
+        if isinstance(parsed_target, list) and index < len(parsed_target):
+            target_item = parsed_target[index]
+            if isinstance(target_item, list) and target_item and isinstance(target_item[0], str):
+                target = strip_numbered_title_prefix(target_item[0])
+        if is_valid_term(term):
+            pairs.append((term, target))
+
+    return pairs or [(clean_text(raw_source), clean_text(raw_target))]
 
 
 def category_for(term: str) -> str:
@@ -963,12 +1046,12 @@ def style_sheet(worksheet) -> None:
 
 
 def resolve_column_index(headers: list[object], expected_name: str) -> int:
-    normalized = {clean_text(name).lower(): index for index, name in enumerate(headers)}
     key = clean_text(expected_name).lower()
-    if key not in normalized:
-        available = ", ".join(str(name) for name in headers)
-        raise ValueError(f"Missing column '{expected_name}'. Available headers: {available}")
-    return normalized[key]
+    for index, name in enumerate(headers):
+        if clean_text(name).lower() == key:
+            return index
+    available = ", ".join(str(name) for name in headers)
+    raise ValueError(f"Missing column '{expected_name}'. Available headers: {available}")
 
 
 XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -1064,13 +1147,29 @@ def records_from_rows(
 ) -> list[Record]:
     if not rows:
         return []
-    headers = list(rows[0])
-    id_index = resolve_column_index(headers, id_column)
-    source_index = resolve_column_index(headers, source_column)
-    target_index = None if source_only else resolve_column_index(headers, target_column)
+    layout = language_table_layout_from_rows(
+        rows=rows,
+        id_column=id_column,
+        source_column=source_column,
+        target_column=target_column,
+        source_only=source_only,
+    )
+    if layout is None:
+        headers = list(rows[0])
+        id_index = resolve_column_index(headers, id_column)
+        source_index = resolve_column_index(headers, source_column)
+        target_index = None if source_only else resolve_column_index(headers, target_column)
+        data_rows = rows[1:]
+        first_data_row_number = 2
+    else:
+        id_index = layout.id_index
+        source_index = layout.source_index
+        target_index = layout.target_index
+        data_rows = rows[layout.header_row_index + 1 :]
+        first_data_row_number = layout.header_row_index + 2
 
     records: list[Record] = []
-    for row_number, row in enumerate(rows[1:], start=2):
+    for row_number, row in enumerate(data_rows, start=first_data_row_number):
         row_values = list(row)
         row_id = "" if id_index >= len(row_values) or row_values[id_index] is None else str(row_values[id_index])
         if not row_id:
@@ -1123,6 +1222,117 @@ def first_matching_header(headers: list[object], candidates: list[str]) -> int |
         key = clean_text(candidate).lower()
         if key in lookup:
             return lookup[key]
+    return None
+
+
+def first_matching_header_fuzzy(headers: list[object], candidates: list[str]) -> int | None:
+    exact_index = first_matching_header(headers, candidates)
+    if exact_index is not None:
+        return exact_index
+    normalized_candidates = [clean_text(candidate).lower() for candidate in candidates if clean_text(candidate)]
+    for index, header in enumerate(headers):
+        header_key = clean_text(header).lower()
+        if not header_key:
+            continue
+        if any(candidate in header_key for candidate in normalized_candidates):
+            return index
+    return None
+
+
+def canonical_output_header(requested_header: str, default_header: str) -> str:
+    clean_header = clean_text(requested_header)
+    return default_header if clean_header.lower() == default_header.lower() else clean_header
+
+
+def value_at(values: list[object], index: int | None) -> object:
+    if index is None or index >= len(values):
+        return ""
+    return values[index]
+
+
+def exact_sheet_column_layout(
+    headers: list[str],
+    header_row_index: int,
+    id_column: str,
+    source_column: str,
+    target_column: str,
+    source_only: bool = False,
+) -> SheetColumnLayout | None:
+    try:
+        id_index = resolve_column_index(headers, id_column)
+        source_index = resolve_column_index(headers, source_column)
+        target_index = None if source_only else resolve_column_index(headers, target_column)
+    except ValueError:
+        return None
+    return SheetColumnLayout(
+        header_row_index=header_row_index,
+        headers=headers,
+        id_index=id_index,
+        source_index=source_index,
+        target_index=target_index,
+        output_indexes=list(range(len(headers))),
+    )
+
+
+def auto_sheet_column_layout(
+    headers: list[str],
+    header_row_index: int,
+    id_column: str,
+    source_column: str,
+    target_column: str,
+    source_only: bool = False,
+) -> SheetColumnLayout | None:
+    id_index = first_matching_header_fuzzy(headers, [id_column, *AUTO_ID_HEADERS])
+    source_index = first_matching_header_fuzzy(headers, [source_column, *AUTO_SOURCE_HEADERS])
+    target_index = None if source_only else first_matching_header_fuzzy(headers, [target_column, *AUTO_TARGET_HEADERS])
+    if id_index is None or source_index is None or (not source_only and target_index is None):
+        return None
+    output_indexes = [id_index, source_index]
+    output_headers = ["ID", "CN"]
+    if not source_only:
+        output_indexes.append(target_index if target_index is not None else -1)
+        output_headers.append(canonical_output_header(target_column, "EN"))
+    return SheetColumnLayout(
+        header_row_index=header_row_index,
+        headers=output_headers,
+        id_index=id_index,
+        source_index=source_index,
+        target_index=target_index,
+        output_indexes=output_indexes,
+    )
+
+
+def language_table_layout_from_rows(
+    rows: list[list[object]],
+    id_column: str,
+    source_column: str,
+    target_column: str,
+    source_only: bool = False,
+) -> SheetColumnLayout | None:
+    for header_row_index, row in enumerate(rows[:HEADER_SCAN_LIMIT]):
+        headers, _empty_values = trim_trailing_empty_columns(list(row))
+        if not headers:
+            continue
+        exact_layout = exact_sheet_column_layout(
+            headers=headers,
+            header_row_index=header_row_index,
+            id_column=id_column,
+            source_column=source_column,
+            target_column=target_column,
+            source_only=source_only,
+        )
+        if exact_layout is not None:
+            return exact_layout
+        auto_layout = auto_sheet_column_layout(
+            headers=headers,
+            header_row_index=header_row_index,
+            id_column=id_column,
+            source_column=source_column,
+            target_column=target_column,
+            source_only=source_only,
+        )
+        if auto_layout is not None:
+            return auto_layout
     return None
 
 
@@ -1405,30 +1615,36 @@ def announcement_candidate_rows_from_sheet_rows(
 ) -> tuple[list[str], list[dict[str, object]]]:
     if not rows:
         return [], []
-    headers, _empty_values = trim_trailing_empty_columns(list(rows[0]))
-    if not headers:
-        return [], []
-    try:
-        id_index = resolve_column_index(headers, id_column)
-        source_index = resolve_column_index(headers, source_column)
-        target_index = None if source_only else resolve_column_index(headers, target_column)
-    except ValueError:
+    layout = language_table_layout_from_rows(
+        rows=rows,
+        id_column=id_column,
+        source_column=source_column,
+        target_column=target_column,
+        source_only=source_only,
+    )
+    if layout is None:
         return [], []
 
     curated_rules = curated_rules if curated_rules is not None else new_curated_rules()
     records_by_term: dict[str, list[tuple[str, str, list[object], str]]] = defaultdict(list)
-    for row_number, row in enumerate(rows[1:], start=2):
-        _headers, values = trim_trailing_empty_columns(headers, list(row))
-        raw_source = "" if source_index >= len(values) else values[source_index]
-        term = clean_text(raw_source)
-        if not is_valid_term(term):
-            continue
-        row_id = "" if id_index >= len(values) or values[id_index] is None else str(values[id_index])
+    for row_number, row in enumerate(rows[layout.header_row_index + 1 :], start=layout.header_row_index + 2):
+        row_values = list(row)
+        raw_source = value_at(row_values, layout.source_index)
+        row_id = "" if layout.id_index >= len(row_values) or row_values[layout.id_index] is None else str(row_values[layout.id_index])
         if not row_id:
             row_id = f"{sheet_title}:{row_number}"
-        target = "" if target_index is None or target_index >= len(values) else clean_text(values[target_index])
+        raw_target = "" if layout.target_index is None else value_at(row_values, layout.target_index)
         raw_source_text = "" if raw_source is None else str(raw_source).strip()
-        records_by_term[term].append((row_id, target, values, raw_source_text))
+        for term, target in extract_structured_term_pairs(raw_source, raw_target):
+            term = clean_text(term)
+            if not is_valid_term(term):
+                continue
+            values = [value_at(row_values, index) for index in layout.output_indexes]
+            if len(values) >= 2:
+                values[1] = term
+            if len(values) >= 3:
+                values[2] = target
+            records_by_term[term].append((row_id, clean_text(target), values, raw_source_text))
 
     candidate_rows: list[dict[str, object]] = []
     for term, entries in records_by_term.items():
@@ -1450,7 +1666,7 @@ def announcement_candidate_rows_from_sheet_rows(
                 "_AnnouncementValues": values,
             }
         )
-    return headers, candidate_rows
+    return layout.headers, candidate_rows
 
 
 def build_announcement_candidate_rows_from_workbook(
@@ -1505,13 +1721,17 @@ def build_announcement_candidate_rows_from_workbook(
         return headers, candidate_rows
 
 
+def is_low_value_announcement_term(term: str) -> bool:
+    return clean_text(term) in LOW_VALUE_ANNOUNCEMENT_TERMS
+
+
 def select_announcement_term_rows(
     term_rows: list[dict[str, object]],
     announcement_text: str,
     include_empty: bool = False,
 ) -> list[dict[str, object]]:
     normalized_notice = clean_text(announcement_text)
-    candidates: list[tuple[int, int, int, str, dict[str, object]]] = []
+    candidates: list[tuple[int, int, int, int, str, dict[str, object]]] = []
     spans_by_term: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for row in term_rows:
         cn = clean_text(row.get("CN"))
@@ -1527,14 +1747,15 @@ def select_announcement_term_rows(
         output_row["EN"] = en
         for match in re.finditer(re.escape(cn), normalized_notice):
             span = (match.start(), match.end())
-            candidates.append((span[0], span[1], -len(cn), cn, output_row))
+            low_value_rank = 1 if is_low_value_announcement_term(cn) else 0
+            candidates.append((low_value_rank, span[0], span[1], -len(cn), cn, output_row))
             spans_by_term[cn].append(span)
 
-    candidates.sort(key=lambda item: (item[0], item[2], item[3]))
+    candidates.sort(key=lambda item: (item[0], item[1], item[3], item[4]))
     selected_spans: list[tuple[int, int]] = []
     selected_terms: set[str] = set()
     selected_rows: list[dict[str, object]] = []
-    for start, end, _negative_length, cn, row in candidates:
+    for _low_value_rank, start, end, _negative_length, cn, row in candidates:
         if cn in selected_terms:
             continue
         if any(start < selected_end and end > selected_start for selected_start, selected_end in selected_spans):
@@ -2182,18 +2403,194 @@ def write_announcement_glossary_workbook(
                 values.extend([""] * (len(output_headers) - len(values)))
             glossary_sheet.append(values)
         else:
-            glossary_sheet.append(
-                [
-                    row.get("ID", ""),
-                    row.get("CN", ""),
-                    clean_text(row.get("EN")) or clean_text(row.get("EN2")),
-                ]
-            )
+            values = []
+            for header in output_headers:
+                if clean_text(header).lower() == "en":
+                    values.append(clean_text(row.get("EN")) or clean_text(row.get("EN2")))
+                else:
+                    values.append(row.get(header, ""))
+            glossary_sheet.append(values)
     style_sheet(glossary_sheet)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
     workbook.close()
+
+
+def parse_language_table_spec(raw_spec: str) -> LanguageTableSpec:
+    if "=" not in raw_spec:
+        raise ValueError(f"Invalid --language-table value '{raw_spec}'. Expected LANG=path.")
+    raw_language, raw_path = raw_spec.split("=", 1)
+    language = clean_text(raw_language).upper()
+    if not language or not re.match(r"^[A-Z0-9_-]+$", language):
+        raise ValueError(f"Invalid language code in --language-table value '{raw_spec}'.")
+    if not raw_path.strip():
+        raise ValueError(f"Missing path in --language-table value '{raw_spec}'.")
+    path = Path(raw_path.strip())
+    return LanguageTableSpec(language=language, path=path)
+
+
+def parse_language_table_specs(raw_specs: list[str]) -> list[LanguageTableSpec]:
+    specs = [parse_language_table_spec(raw_spec) for raw_spec in raw_specs]
+    seen_languages: set[str] = set()
+    for spec in specs:
+        if spec.language in seen_languages:
+            raise ValueError(f"Duplicate --language-table language code: {spec.language}")
+        seen_languages.add(spec.language)
+    return specs
+
+
+def build_multilingual_announcement_rows(
+    language_table_specs: list[LanguageTableSpec],
+    sheet_name: str | None,
+    id_column: str,
+    source_column: str,
+    curated_rules: dict[str, Any],
+    announcement_min_hit: int,
+    source_only: bool,
+    announcement_text: str,
+    include_empty: bool = False,
+) -> tuple[list[dict[str, object]], dict[str, int]]:
+    candidate_by_cn: dict[str, dict[str, object]] = {}
+    translations_by_language: dict[str, dict[str, str]] = {spec.language: {} for spec in language_table_specs}
+    duplicate_source_terms = 0
+
+    for spec in language_table_specs:
+        _headers, candidate_rows = build_announcement_candidate_rows_from_workbook(
+            input_path=spec.path,
+            sheet_name=sheet_name,
+            id_column=id_column,
+            source_column=source_column,
+            target_column=spec.language,
+            curated_rules=curated_rules,
+            min_hit=announcement_min_hit,
+            source_only=source_only,
+        )
+        for row in candidate_rows:
+            cn = clean_text(row.get("CN"))
+            if not cn:
+                continue
+            target = clean_text(row.get("EN")) or clean_text(row.get("EN2"))
+            if target:
+                translations_by_language[spec.language][cn] = target
+            candidate = candidate_by_cn.get(cn)
+            if candidate is None:
+                candidate_by_cn[cn] = {
+                    "ID": row.get("ID", ""),
+                    "CN": cn,
+                    "EN": target,
+                }
+            else:
+                if clean_text(candidate.get("ID")) and clean_text(row.get("ID")) and clean_text(candidate.get("ID")) != clean_text(row.get("ID")):
+                    duplicate_source_terms += 1
+                if not clean_text(candidate.get("EN")) and target:
+                    candidate["EN"] = target
+
+    matched_terms = select_announcement_term_rows(
+        term_rows=list(candidate_by_cn.values()),
+        announcement_text=announcement_text,
+        include_empty=include_empty,
+    )
+
+    rows: list[dict[str, object]] = []
+    for matched in matched_terms:
+        cn = clean_text(matched.get("CN"))
+        row = {
+            "ID": matched.get("ID", ""),
+            "CN": cn,
+        }
+        for spec in language_table_specs:
+            row[spec.language] = translations_by_language[spec.language].get(cn, "")
+        rows.append(row)
+
+    stats = {
+        "candidate_terms": len(candidate_by_cn),
+        "duplicate_source_terms": duplicate_source_terms,
+    }
+    return rows, stats
+
+
+def announcement_output_values(row: dict[str, object], headers: list[str]) -> list[object]:
+    source_values = row.get("_AnnouncementValues")
+    if isinstance(source_values, list):
+        values = source_values[: len(headers)]
+        if len(values) < len(headers):
+            values.extend([""] * (len(headers) - len(values)))
+        return values
+    values: list[object] = []
+    for header in headers:
+        if clean_text(header).lower() == "en":
+            values.append(clean_text(row.get("EN")) or clean_text(row.get("EN2")))
+        else:
+            values.append(row.get(header, ""))
+    return values
+
+
+def build_announcement_validation_markdown(
+    announcement_materials: list[Path],
+    language_tables: list[str],
+    glossary_output_path: Path,
+    rows: list[dict[str, object]],
+    headers: list[str],
+    stats: dict[str, int] | None = None,
+) -> str:
+    stats = stats or {}
+    cn_values = [clean_text(row.get("CN")) for row in rows if clean_text(row.get("CN"))]
+    duplicate_cn = len(cn_values) - len(set(cn_values))
+    language_headers = headers[2:]
+    empty_translation_cells = 0
+    for row in rows:
+        values = announcement_output_values(row, headers)
+        for index in range(2, len(headers)):
+            if index >= len(values) or not clean_text(values[index]):
+                empty_translation_cells += 1
+    low_value_terms = sum(1 for row in rows if is_low_value_announcement_term(clean_text(row.get("CN"))))
+
+    lines = [
+        "# Announcement Glossary Validation",
+        "",
+        f"status: ok",
+        f"term_count: {len(rows)}",
+        f"languages: {', '.join(language_headers) if language_headers else 'none'}",
+        f"duplicate_cn: {duplicate_cn}",
+        f"duplicate_source_terms: {int(stats.get('duplicate_source_terms', 0))}",
+        f"empty_translation_cells: {empty_translation_cells}",
+        f"missing_language_values: {empty_translation_cells}",
+        f"low_value_terms: {low_value_terms}",
+        f"candidate_terms: {int(stats.get('candidate_terms', len(rows)))}",
+        f"output: {glossary_output_path}",
+        "",
+        "## Announcement Materials",
+    ]
+    lines.extend(f"- {path}" for path in announcement_materials)
+    lines.append("")
+    lines.append("## Language Tables")
+    lines.extend(f"- {source}" for source in language_tables)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_announcement_validation_report(
+    output_path: Path,
+    announcement_materials: list[Path],
+    language_tables: list[str],
+    glossary_output_path: Path,
+    rows: list[dict[str, object]],
+    headers: list[str],
+    stats: dict[str, int] | None = None,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        build_announcement_validation_markdown(
+            announcement_materials=announcement_materials,
+            language_tables=language_tables,
+            glossary_output_path=glossary_output_path,
+            rows=rows,
+            headers=headers,
+            stats=stats,
+        ),
+        encoding="utf-8",
+    )
 
 
 def default_output_paths(input_path: Path, detail_output: str | None, final_output: str | None) -> tuple[Path, Path]:
@@ -2224,6 +2621,15 @@ def default_announcement_output_path(material_paths: list[Path], announcement_ou
     return first_material.with_name(f"{first_material.stem}_announcement_terms_{date_suffix}.xlsx")
 
 
+def default_announcement_validation_output_path(
+    material_paths: list[Path],
+    announcement_validation_output: str | None,
+) -> Path | None:
+    if announcement_validation_output:
+        return Path(announcement_validation_output)
+    return None
+
+
 def should_run_announcement_only(args: argparse.Namespace) -> bool:
     return bool(args.announcement_material) and not any(
         [
@@ -2239,11 +2645,17 @@ def should_run_announcement_only(args: argparse.Namespace) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Extract glossary terms from a game localization language table.")
-    parser.add_argument("input_path", help="Path to the source XLSX language table.")
+    parser.add_argument("input_path", nargs="?", help="Path to the source XLSX language table.")
     parser.add_argument("--sheet", help="Worksheet name. Defaults to the first sheet.")
     parser.add_argument("--id-column", default="ID", help="ID column header. Default: ID")
     parser.add_argument("--source-column", default="cn", help="Source text column header. Default: cn")
     parser.add_argument("--target-column", default="en", help="Target text column header. Default: en")
+    parser.add_argument(
+        "--language-table",
+        action="append",
+        default=[],
+        help="Announcement lookup language table in LANG=path form. Can be repeated, for example EN=table.xlsx.",
+    )
     parser.add_argument(
         "--source-only",
         action="store_true",
@@ -2313,6 +2725,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for the announcement-specific glossary workbook output.",
     )
     parser.add_argument(
+        "--announcement-validation-output",
+        help="Path for the announcement validation Markdown report.",
+    )
+    parser.add_argument(
         "--announcement-min-hit",
         type=int,
         default=1,
@@ -2322,7 +2738,84 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        language_table_specs = parse_language_table_specs(args.language_table)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.input_path and language_table_specs:
+        parser.error("Use either positional input_path or --language-table, not both.")
+    if not args.input_path and not language_table_specs:
+        parser.error("input_path or at least one --language-table LANG=path is required.")
+
+    announcement_material_paths = [Path(path) for path in args.announcement_material]
+    announcement_output_path = default_announcement_output_path(
+        material_paths=announcement_material_paths,
+        announcement_output=args.announcement_output,
+    )
+    announcement_validation_output_path = default_announcement_validation_output_path(
+        material_paths=announcement_material_paths,
+        announcement_validation_output=args.announcement_validation_output,
+    )
+    curated_rules_path = Path(args.curated_rules) if args.curated_rules else None
+    observations_store_path = Path(args.observations_store) if args.observations_store else None
+    curated_rules = load_curated_rules(curated_rules_path)
+    observations_store = load_observation_store(observations_store_path)
+
+    if language_table_specs:
+        if not announcement_material_paths:
+            parser.error("--language-table is only supported with --announcement-material.")
+        if any([args.output, args.final_output, args.project_brief_output, args.translation_prompt_output, args.project_material, args.project_note]):
+            parser.error("--language-table cannot be combined with full glossary or project brief outputs.")
+        if announcement_output_path is None:
+            parser.error("--announcement-output could not be resolved.")
+        announcement_text = load_announcement_texts(announcement_material_paths)
+        announcement_rows, announcement_stats = build_multilingual_announcement_rows(
+            language_table_specs=language_table_specs,
+            sheet_name=args.sheet,
+            id_column=args.id_column,
+            source_column=args.source_column,
+            curated_rules=curated_rules,
+            announcement_min_hit=args.announcement_min_hit,
+            source_only=args.source_only,
+            announcement_text=announcement_text,
+            include_empty=args.include_empty_final_terms,
+        )
+        announcement_headers = ["ID", "CN", *[spec.language for spec in language_table_specs]]
+        write_announcement_glossary_workbook(
+            output_path=announcement_output_path,
+            matched_rows=announcement_rows,
+            id_header=args.id_column,
+            source_header=args.source_column,
+            target_header=args.target_column,
+            headers=announcement_headers,
+        )
+        if announcement_validation_output_path is not None:
+            write_announcement_validation_report(
+                output_path=announcement_validation_output_path,
+                announcement_materials=announcement_material_paths,
+                language_tables=[f"{spec.language}: {spec.path}" for spec in language_table_specs],
+                glossary_output_path=announcement_output_path,
+                rows=announcement_rows,
+                headers=announcement_headers,
+                stats=announcement_stats,
+            )
+
+        print("INPUT=multi-language")
+        print("DETAIL_OUTPUT=disabled")
+        print("FINAL_OUTPUT=disabled")
+        print("PROJECT_BRIEF_OUTPUT=disabled")
+        print("TRANSLATION_PROMPT_OUTPUT=disabled")
+        print(f"ANNOUNCEMENT_OUTPUT={announcement_output_path}")
+        print(f"ANNOUNCEMENT_VALIDATION_OUTPUT={announcement_validation_output_path or 'disabled'}")
+        print(f"ANNOUNCEMENT_MATERIALS={len(announcement_material_paths)}")
+        print(f"ANNOUNCEMENT_TERMS={len(announcement_rows)}")
+        print(f"LANGUAGE_TABLES={len(language_table_specs)}")
+        print(f"CURATED_RULES={curated_rules_path or 'disabled'}")
+        print(f"OBSERVATIONS_STORE={observations_store_path or 'disabled'}")
+        return 0
+
     input_path = Path(args.input_path)
     detail_output_path, final_output_path = default_output_paths(
         input_path=input_path,
@@ -2335,16 +2828,7 @@ def main(argv: list[str] | None = None) -> int:
         project_brief_output=args.project_brief_output,
     )
     translation_prompt_output_path = Path(args.translation_prompt_output) if args.translation_prompt_output else None
-    announcement_material_paths = [Path(path) for path in args.announcement_material]
-    announcement_output_path = default_announcement_output_path(
-        material_paths=announcement_material_paths,
-        announcement_output=args.announcement_output,
-    )
     announcement_only = should_run_announcement_only(args)
-    curated_rules_path = Path(args.curated_rules) if args.curated_rules else None
-    observations_store_path = Path(args.observations_store) if args.observations_store else None
-    curated_rules = load_curated_rules(curated_rules_path)
-    observations_store = load_observation_store(observations_store_path)
     digest = file_digest(input_path)
 
     records, sheet_name = load_records(
@@ -2387,6 +2871,21 @@ def main(argv: list[str] | None = None) -> int:
             target_header=args.target_column,
             headers=announcement_headers,
         )
+        output_headers = announcement_headers or [
+            display_header_name(args.id_column, "ID"),
+            display_header_name(args.source_column, "CN"),
+            display_header_name(args.target_column, "EN"),
+        ]
+        if announcement_validation_output_path is not None:
+            write_announcement_validation_report(
+                output_path=announcement_validation_output_path,
+                announcement_materials=announcement_material_paths,
+                language_tables=[f"{display_header_name(args.target_column, 'EN')}: {input_path}"],
+                glossary_output_path=announcement_output_path,
+                rows=announcement_rows,
+                headers=output_headers,
+                stats={"candidate_terms": len(announcement_candidate_rows)},
+            )
 
         print(f"INPUT={input_path}")
         print("DETAIL_OUTPUT=disabled")
@@ -2394,6 +2893,7 @@ def main(argv: list[str] | None = None) -> int:
         print("PROJECT_BRIEF_OUTPUT=disabled")
         print("TRANSLATION_PROMPT_OUTPUT=disabled")
         print(f"ANNOUNCEMENT_OUTPUT={announcement_output_path}")
+        print(f"ANNOUNCEMENT_VALIDATION_OUTPUT={announcement_validation_output_path or 'disabled'}")
         print(f"ANNOUNCEMENT_MATERIALS={len(announcement_material_paths)}")
         print(f"ANNOUNCEMENT_TERMS={len(announcement_rows)}")
         print(f"CURATED_RULES={curated_rules_path or 'disabled'}")
@@ -2478,6 +2978,21 @@ def main(argv: list[str] | None = None) -> int:
             target_header=args.target_column,
             headers=announcement_headers,
         )
+        output_headers = announcement_headers or [
+            display_header_name(args.id_column, "ID"),
+            display_header_name(args.source_column, "CN"),
+            display_header_name(args.target_column, "EN"),
+        ]
+        if announcement_validation_output_path is not None:
+            write_announcement_validation_report(
+                output_path=announcement_validation_output_path,
+                announcement_materials=announcement_material_paths,
+                language_tables=[f"{display_header_name(args.target_column, 'EN')}: {input_path}"],
+                glossary_output_path=announcement_output_path,
+                rows=announcement_rows,
+                headers=output_headers,
+                stats={"candidate_terms": len(announcement_candidate_rows)},
+            )
 
     save_curated_rules(curated_rules_path, curated_rules)
     save_observation_store(observations_store_path, observations_store)
@@ -2488,6 +3003,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PROJECT_BRIEF_OUTPUT={project_brief_output_path if not args.no_project_brief else 'disabled'}")
     print(f"TRANSLATION_PROMPT_OUTPUT={translation_prompt_output_path or 'disabled'}")
     print(f"ANNOUNCEMENT_OUTPUT={announcement_output_path if announcement_output_path else 'disabled'}")
+    print(f"ANNOUNCEMENT_VALIDATION_OUTPUT={announcement_validation_output_path if announcement_validation_output_path else 'disabled'}")
     print(f"ANNOUNCEMENT_MATERIALS={len(announcement_material_paths)}")
     print(f"ANNOUNCEMENT_TERMS={len(announcement_rows)}")
     print(f"PROJECT_MATERIALS={len(material_sources)}")

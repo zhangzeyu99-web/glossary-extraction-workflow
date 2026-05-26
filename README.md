@@ -165,6 +165,8 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 
 如果没有同时指定 `--output`、`--final-output`、`--project-brief-output` 或补充项目资料参数，脚本会自动进入公告专用模式，只生成公告术语表，避免为大语言表额外生成完整明细表。
 
+脚本会自动识别常见导出型总表表头，不要求表头在第 1 行；例如 `索引ID / 内容 / 中文，用于导出...` 会映射为 `ID / CN / EN`。对于 `["活动名"]`、`["活动名", "#色值"]`、嵌套帮助列表标题等非规范单元格，也会提取干净术语和对应译文。
+
 公告资料可以重复传入，支持 `docx / txt / md / json / csv / tsv / xlsx`：
 
 ```bash
@@ -175,7 +177,19 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --announcement-min-hit 1
 ```
 
+多语言公告术语合并使用显式语言码，避免依赖文件名猜测：
+
+```bash
+python scripts/extract_glossary.py \
+  --language-table EN=/path/to/language_en.xlsx \
+  --language-table FR=/path/to/language_fr.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --announcement-output /path/to/announcement_terms.xlsx
+```
+
 输出 workbook 只有一个 `Glossary` sheet，列结构沿用完整语言表表头，例如 `ID / CN / EN / FR / DE / RU / IT / ES / PT / ...`。默认不输出缺少英文译文的术语，如需保留空译文候选，可加 `--include-empty-final-terms`。
+
+多语言合并模式输出 `ID / CN / EN / FR...`。`玩家 / 活动 / 查看 / 购买 / 发送 / 获得 / 奖励` 等低价值通用词不会被删除，只会排到系统名、活动名、玩法名、道具名之后。默认只生成术语译文交付表；如需内部审计，可显式传 `--announcement-validation-output /path/to/announcement_validation.md` 生成 validation Markdown。
 
 ### 6. 产物说明
 
