@@ -11,6 +11,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS_PATH = ROOT / "scripts" / "run_glossary_harness.py"
+SCRIPTS_ROOT = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS_ROOT))
 SPEC = importlib.util.spec_from_file_location("glossary_harness", HARNESS_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -26,6 +28,15 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(report["exact_match_count"], 3)
         self.assertEqual(report["missing_terms"], [])
         self.assertEqual(report["mismatched_terms"], [])
+
+    def test_evaluate_announcement_fixture_reports_pass(self):
+        fixture_path = ROOT / "fixtures" / "announcement_lookup_regression.json"
+        report = MODULE.evaluate_fixture(fixture_path)
+        self.assertTrue(report["pass"], msg=report)
+        self.assertEqual(report["expected_count"], 3)
+        self.assertEqual(report["produced_count"], 3)
+        self.assertEqual(report["headers"], ["ID", "CN", "EN", "FR"])
+        self.assertFalse(report["validation_created"])
 
     def test_harness_cli_writes_report(self):
         fixture_path = ROOT / "fixtures" / "core_regression.json"
