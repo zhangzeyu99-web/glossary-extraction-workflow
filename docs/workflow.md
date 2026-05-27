@@ -142,10 +142,34 @@ python scripts/extract_glossary.py \
   --announcement-output /path/to/announcement_terms.xlsx
 ```
 
+AI 补充层是可选流程，默认不启用。脚本只导出公告文本、已命中术语和少量相关句内证据给模型，不把完整语言包放进上下文：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --announcement-output /path/to/announcement_terms.xlsx \
+  --project-name "Project Name" \
+  --ai-supplement \
+  --ai-supplement-packet-output /path/to/update_notice_ai_packet.json
+```
+
+模型返回结构化 JSON 后再回填。只有公告中出现、具备语言表证据、置信度不低于 medium 的补充术语会进入主 Excel；其他候选只写 sidecar 报告：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --announcement-output /path/to/announcement_terms.xlsx \
+  --project-name "Project Name" \
+  --ai-supplement \
+  --ai-supplement-response /path/to/ai_response.json \
+  --ai-supplement-report-output /path/to/ai_supplement_report.md
+```
+
 处理口径：
 
 - 先从完整语言表中按术语级候选提取，不直接输出整句语言表行
 - 用中文公告文本做精确包含匹配，按公告首次出现位置排序，同位置长词优先
+- AI 补充只用于漏词补充、句内术语拆分和置信提示，不直接决定标准译文
 - 输出单 sheet `Glossary`，列结构沿用完整语言表表头，例如 `ID / CN / EN / FR / DE / RU / IT / ES / PT / ...`
 - 多语言模式输出 `ID / CN / EN / FR...`，以 CN 精确合并；同一 CN 多个 ID 时使用第一个语言表的首个命中 ID
 - 低价值通用词只降级排序，不默认删除，避免漏掉固定 UI 译法
@@ -215,7 +239,9 @@ python scripts/extract_glossary.py \
 ```bash
 python scripts/run_glossary_harness.py \
   fixtures/core_regression.json \
-  fixtures/observation_feedback_regression.json
+  fixtures/observation_feedback_regression.json \
+  fixtures/announcement_lookup_regression.json \
+  fixtures/announcement_ai_supplement_regression.json
 ```
 
 通过后再跑真实语言表。

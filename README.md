@@ -187,6 +187,29 @@ python scripts/extract_glossary.py \
   --announcement-output /path/to/announcement_terms.xlsx
 ```
 
+可选 AI 补充层用于提高召回率，但默认关闭。脚本仍然先做本地精确 lookup；启用后只导出公告文本、已命中术语和本地摘取的少量相关句内证据，不会把完整语言表交给模型：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --announcement-output /path/to/announcement_terms.xlsx \
+  --project-name "Project Name" \
+  --ai-supplement \
+  --ai-supplement-packet-output /path/to/update_notice_ai_packet.json
+```
+
+把 packet 交给 Codex 或工作台模型后，将结构化 JSON response 回填给脚本，可信且有语言表证据的补充术语会并入主表；置信度、证据和项目名译文缺失提醒只写 sidecar 报告：
+
+```bash
+python scripts/extract_glossary.py /path/to/language_table.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --announcement-output /path/to/announcement_terms.xlsx \
+  --project-name "Project Name" \
+  --ai-supplement \
+  --ai-supplement-response /path/to/ai_response.json \
+  --ai-supplement-report-output /path/to/ai_supplement_report.md
+```
+
 输出 workbook 只有一个 `Glossary` sheet，列结构沿用完整语言表表头，例如 `ID / CN / EN / FR / DE / RU / IT / ES / PT / ...`。默认不输出缺少英文译文的术语，如需保留空译文候选，可加 `--include-empty-final-terms`。
 
 多语言合并模式输出 `ID / CN / EN / FR...`。`玩家 / 活动 / 查看 / 购买 / 发送 / 获得 / 奖励` 等低价值通用词不会被删除，只会排到系统名、活动名、玩法名、道具名之后。默认只生成术语译文交付表；如需内部审计，可显式传 `--announcement-validation-output /path/to/announcement_validation.md` 生成 validation Markdown。
@@ -313,7 +336,9 @@ python -m pytest
 ```bash
 python scripts/run_glossary_harness.py \
   fixtures/core_regression.json \
-  fixtures/observation_feedback_regression.json
+  fixtures/observation_feedback_regression.json \
+  fixtures/announcement_lookup_regression.json \
+  fixtures/announcement_ai_supplement_regression.json
 ```
 
 当前仓库默认提供本地测试命令；如后续账号具备 `workflow` 权限，可再补 GitHub Actions。

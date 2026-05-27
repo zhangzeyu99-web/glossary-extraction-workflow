@@ -941,6 +941,224 @@ class CliIntegrationTests(unittest.TestCase):
 
         self.assertEqual([row["CN"] for row in matched], ["\u822a\u6d77\u8d5b\u5b63", "\u73a9\u5bb6", "\u67e5\u770b"])
 
+    def test_build_ai_supplement_packet_limits_context_to_relevant_evidence(self):
+        packet = MODULE.build_ai_supplement_packet(
+            announcement_text="\u65b0\u589e\u79d8\u5883\u548c\u661f\u754c\u88c2\u9699\u73a9\u6cd5\u3002",
+            matched_rows=[{"ID": "T1", "CN": "\u79d8\u5883", "EN": "Trial Realm"}],
+            candidate_rows=[
+                {"ID": "T1", "CN": "\u79d8\u5883", "EN": "Trial Realm"},
+                {"ID": "S1", "CN": "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218", "EN": "Unlock Astral Rift Challenge"},
+                {"ID": "N1", "CN": "\u5b8c\u5168\u65e0\u5173\u7cfb\u7edf", "EN": "Unrelated System"},
+            ],
+            headers=["ID", "CN", "EN"],
+            project_name="",
+        )
+
+        evidence_sources = [item["source_text"] for item in packet["evidence_rows"]]
+        self.assertIn("\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218", evidence_sources)
+        self.assertNotIn("\u5b8c\u5168\u65e0\u5173\u7cfb\u7edf", evidence_sources)
+        self.assertEqual(packet["matched_terms"], [{"ID": "T1", "CN": "\u79d8\u5883", "EN": "Trial Realm"}])
+
+    def test_ai_evidence_candidates_keep_long_sentence_context(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "language.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Main"
+            worksheet.append(["ID", "CN", "EN"])
+            worksheet.append(["S1", "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218\uff0c\u8d62\u53d6\u4e30\u539a\u5956\u52b1\u3002", "Unlock Astral Rift Challenge to win rich rewards."])
+            worksheet.append(["N1", "\u5b8c\u5168\u65e0\u5173\u7684\u957f\u53e5\u5b50\u4e0d\u5e94\u8fdb\u5165\u8bc1\u636e\u5305\u3002", "This unrelated long sentence should not be included."])
+            workbook.save(table_path)
+            workbook.close()
+
+            candidate_rows = MODULE.build_ai_evidence_candidate_rows_from_workbook(
+                input_path=table_path,
+                sheet_name=None,
+                id_column="ID",
+                source_column="CN",
+                target_column="EN",
+                language="EN",
+                source_only=False,
+            )
+            packet = MODULE.build_ai_supplement_packet(
+                announcement_text="\u65b0\u589e\u661f\u754c\u88c2\u9699\u73a9\u6cd5\u3002",
+                matched_rows=[],
+                candidate_rows=candidate_rows,
+                headers=["ID", "CN", "EN"],
+                project_name="",
+            )
+
+            evidence_sources = [item["source_text"] for item in packet["evidence_rows"]]
+            self.assertIn("\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218\uff0c\u8d62\u53d6\u4e30\u539a\u5956\u52b1\u3002", evidence_sources)
+            self.assertNotIn("\u5b8c\u5168\u65e0\u5173\u7684\u957f\u53e5\u5b50\u4e0d\u5e94\u8fdb\u5165\u8bc1\u636e\u5305\u3002", evidence_sources)
+
+    def test_apply_ai_supplement_response_adds_evidence_backed_term_to_main_rows(self):
+        packet = {
+            "evidence_rows": [
+                {
+                    "evidence_id": "S1",
+                    "ID": "S1",
+                    "source_text": "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218",
+                    "target_text": "Unlock Astral Rift Challenge",
+                    "language": "EN",
+                    "reason": "announcement_overlap",
+                }
+            ]
+        }
+        response = {
+            "supplement_terms": [
+                {
+                    "cn": "\u661f\u754c\u88c2\u9699",
+                    "translations": {"EN": "Astral Rift"},
+                    "source_ids": ["S1"],
+                    "confidence": "medium",
+                    "reason": "split from bilingual sentence",
+                    "evidence_ids": ["S1"],
+                    "action": "add_to_main",
+                }
+            ]
+        }
+
+        rows, report = MODULE.apply_ai_supplement_response(
+            announcement_rows=[{"ID": "T1", "CN": "\u79d8\u5883", "EN": "Trial Realm"}],
+            headers=["ID", "CN", "EN"],
+            announcement_text="\u65b0\u589e\u661f\u754c\u88c2\u9699\u73a9\u6cd5\u3002",
+            packet=packet,
+            response=response,
+            project_name="",
+        )
+
+        self.assertEqual([row["CN"] for row in rows], ["\u79d8\u5883", "\u661f\u754c\u88c2\u9699"])
+        self.assertEqual(rows[1]["ID"], "S1")
+        self.assertEqual(rows[1]["EN"], "Astral Rift")
+        self.assertEqual(report["terms"][0]["status"], "added_to_main")
+
+    def test_apply_ai_supplement_response_keeps_low_confidence_or_unbacked_terms_out_of_main_rows(self):
+        packet = {
+            "evidence_rows": [
+                {
+                    "evidence_id": "S1",
+                    "ID": "S1",
+                    "source_text": "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218",
+                    "target_text": "Unlock Astral Rift Challenge",
+                    "language": "EN",
+                    "reason": "announcement_overlap",
+                }
+            ]
+        }
+        response = {
+            "supplement_terms": [
+                {
+                    "cn": "\u661f\u754c\u88c2\u9699",
+                    "translations": {"EN": "Astral Rift"},
+                    "source_ids": ["S1"],
+                    "confidence": "low",
+                    "reason": "too uncertain",
+                    "evidence_ids": ["S1"],
+                    "action": "add_to_main",
+                },
+                {
+                    "cn": "\u865a\u7a7a\u5546\u57ce",
+                    "translations": {"EN": "Void Shop"},
+                    "source_ids": [],
+                    "confidence": "high",
+                    "reason": "no language-table evidence",
+                    "evidence_ids": [],
+                    "action": "add_to_main",
+                },
+            ]
+        }
+
+        rows, report = MODULE.apply_ai_supplement_response(
+            announcement_rows=[],
+            headers=["ID", "CN", "EN"],
+            announcement_text="\u65b0\u589e\u661f\u754c\u88c2\u9699\u548c\u865a\u7a7a\u5546\u57ce\u3002",
+            packet=packet,
+            response=response,
+            project_name="",
+        )
+
+        self.assertEqual(rows, [])
+        self.assertEqual([term["status"] for term in report["terms"]], ["report_only", "report_only"])
+
+    def test_cli_ai_supplement_reports_missing_project_name_translation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "language.xlsx"
+            notice_path = temp_path / "notice.txt"
+            response_path = temp_path / "ai_response.json"
+            announcement_output = temp_path / "announcement_terms.xlsx"
+            report_output = temp_path / "ai_report.md"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Main"
+            worksheet.append(["ID", "CN", "EN"])
+            worksheet.append(["T1", "\u79d8\u5883", "Trial Realm"])
+            worksheet.append(["S1", "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218", "Unlock Astral Rift Challenge"])
+            workbook.save(table_path)
+            workbook.close()
+
+            notice_path.write_text("\u65b0\u589e\u79d8\u5883\u548c\u661f\u754c\u88c2\u9699\u73a9\u6cd5\u3002", encoding="utf-8")
+            response_path.write_text(
+                json.dumps(
+                    {
+                        "supplement_terms": [
+                            {
+                                "cn": "\u661f\u754c\u88c2\u9699",
+                                "translations": {"EN": "Astral Rift"},
+                                "source_ids": ["S1"],
+                                "confidence": "high",
+                                "reason": "split from bilingual sentence",
+                                "evidence_ids": ["S1"],
+                                "action": "add_to_main",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(table_path),
+                    "--announcement-material",
+                    str(notice_path),
+                    "--announcement-output",
+                    str(announcement_output),
+                    "--ai-supplement",
+                    "--ai-supplement-response",
+                    str(response_path),
+                    "--ai-supplement-report-output",
+                    str(report_output),
+                    "--project-name",
+                    "\u52c7\u8005\u8054\u76df",
+                    "--curated-rules",
+                    str(temp_path / "curated.json"),
+                    "--observations-store",
+                    str(temp_path / "observations.json"),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertIn("PROJECT_NAME_TRANSLATION_MISSING=\u52c7\u8005\u8054\u76df", result.stdout)
+            self.assertTrue(report_output.exists())
+
+            output_workbook = load_workbook(announcement_output, read_only=True, data_only=True)
+            rows = list(output_workbook["Glossary"].iter_rows(values_only=True))
+            output_workbook.close()
+            self.assertEqual(rows[0], ("ID", "CN", "EN"))
+            self.assertEqual(rows[1:], [("T1", "\u79d8\u5883", "Trial Realm"), ("S1", "\u661f\u754c\u88c2\u9699", "Astral Rift")])
+            self.assertIn("\u8bf7\u8865\u5145\u9879\u76ee\u540d\u6807\u51c6\u8bd1\u6587", report_output.read_text(encoding="utf-8"))
+
     def test_cli_generates_multilingual_announcement_terms_and_validation_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

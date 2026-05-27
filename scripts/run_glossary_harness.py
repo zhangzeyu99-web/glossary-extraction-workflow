@@ -71,6 +71,32 @@ def evaluate_announcement_fixture(fixture_path: Path, fixture: dict[str, Any]) -
             include_empty=False,
         )
         headers = ["ID", "CN", *[spec.language for spec in language_specs]]
+        ai_report: dict[str, Any] | None = None
+        if "ai_response" in fixture:
+            ai_candidate_rows = extractor.build_multilingual_ai_candidate_rows(
+                language_table_specs=language_specs,
+                sheet_name=None,
+                id_column="ID",
+                source_column="CN",
+                curated_rules=extractor.new_curated_rules(),
+                announcement_min_hit=int(fixture.get("announcement_min_hit", 1)),
+                source_only=False,
+            )
+            packet = extractor.build_ai_supplement_packet(
+                announcement_text=announcement,
+                matched_rows=rows,
+                candidate_rows=ai_candidate_rows,
+                headers=headers,
+                project_name=fixture.get("project_name", ""),
+            )
+            rows, ai_report = extractor.apply_ai_supplement_response(
+                announcement_rows=rows,
+                headers=headers,
+                announcement_text=announcement,
+                packet=packet,
+                response=fixture["ai_response"],
+                project_name=fixture.get("project_name", ""),
+            )
         extractor.write_announcement_glossary_workbook(
             output_path=output_path,
             matched_rows=rows,
@@ -130,6 +156,12 @@ def evaluate_announcement_fixture(fixture_path: Path, fixture: dict[str, Any]) -
         "validation_created": bool(validation_candidates),
         "candidate_terms": stats.get("candidate_terms", 0),
         "duplicate_source_terms": stats.get("duplicate_source_terms", 0),
+        "ai_added_to_main": sum(
+            1
+            for term in (ai_report or {}).get("terms", [])
+            if isinstance(term, dict) and term.get("status") == "added_to_main"
+        ),
+        "project_name_translation_missing": bool((ai_report or {}).get("project_name_translation_missing")),
     }
 
 
