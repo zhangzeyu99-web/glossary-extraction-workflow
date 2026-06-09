@@ -142,7 +142,9 @@ python scripts/extract_glossary.py \
   --announcement-output /path/to/announcement_terms.xlsx
 ```
 
-AI 补充层是可选流程，默认不启用。脚本只导出公告文本、已命中术语和少量相关句内证据给模型，不把完整语言包放进上下文：
+AI 补充层用于提高召回率，但不把完整语言包放进上下文。脚本只导出公告文本、已命中术语和少量相关句内证据给模型。
+
+Codex 线程内执行术语任务时，标准流程是先生成 packet，由当前 Codex 模型直接做漏词补充、句内术语拆分和置信检查，再把结构化 response 回填给脚本：
 
 ```bash
 python scripts/extract_glossary.py /path/to/language_table.xlsx \
@@ -150,10 +152,11 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --announcement-output /path/to/announcement_terms.xlsx \
   --project-name "Project Name" \
   --ai-supplement \
+  --ai-supplement-provider packet \
   --ai-supplement-packet-output /path/to/update_notice_ai_packet.json
 ```
 
-模型返回结构化 JSON 后再回填。只有公告中出现、具备语言表证据、置信度不低于 medium 的补充术语会进入主 Excel；其他候选只写 sidecar 报告：
+Codex 读取 packet 后生成 `/path/to/ai_response.json`，再回填。只有公告中出现、具备语言表证据、置信度不低于 medium 的补充术语会进入主 Excel；其他候选只写 sidecar 报告：
 
 ```bash
 python scripts/extract_glossary.py /path/to/language_table.xlsx \
@@ -161,9 +164,14 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --announcement-output /path/to/announcement_terms.xlsx \
   --project-name "Project Name" \
   --ai-supplement \
+  --ai-supplement-provider file \
   --ai-supplement-response /path/to/ai_response.json \
   --ai-supplement-report-output /path/to/ai_supplement_report.md
 ```
+
+如果要脱离 Codex 线程自动跑，也可以设置 `OPENAI_API_KEY` 并使用 `--ai-supplement-provider openai` 或 `auto`。`--ai-supplement-provider` 支持 `auto / openai / file / packet`；`auto` 的优先级是：`--ai-supplement-response` 文件、`OPENAI_API_KEY` 自动调用、packet-only fallback。
+
+Codex 线程内执行检查清单见 [codex-thread-ai-supplement.md](codex-thread-ai-supplement.md)。后续在 Codex 线程里跑术语提取时，脚本结果不是最终步骤，必须再由 Codex 做一次补充检查。
 
 处理口径：
 
