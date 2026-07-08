@@ -10,7 +10,7 @@
 
 ## Current Version
 
-Current repository version: **v0.3.0**. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+Current repository version: **v0.4.0**. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 Main supported workflows:
 
