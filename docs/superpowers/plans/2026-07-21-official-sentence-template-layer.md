@@ -45,4 +45,4 @@
 
 - [x] 更新工作流文档和术语线程 handoff；README、VERSION、CHANGELOG 保持不变。
 - [x] 运行完整 pytest、全部既有 harness、新增模板 fixture、输出质量检查和真实四语言本地冒烟测试。
-- [ ] 审查差异，只暂存本功能文件，提交并推送 `agent/official-sentence-templates`。
+- [x] 审查差异，只暂存本功能文件，提交并推送 `agent/official-sentence-templates`。
