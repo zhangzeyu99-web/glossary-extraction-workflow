@@ -13,6 +13,7 @@
 - `ID / CN / EN / EN2 / 分类` 术语表整理
 - 公告术语 lookup
 - 多语言公告术语合并
+- 公告官方句式模板提取与译文沿用警告
 - AI supplement packet / response 接口
 - 项目 brief / translation prompt 生成，仅限术语提取流程附带能力
 - 本仓库 README / CHANGELOG / VERSION / docs / tests / fixtures / harness 维护
@@ -201,10 +202,19 @@ python scripts/sync_workflow_sources.py glossary
 
 1. 找公告文件：`docx / txt / md / xlsx`。
 2. 找完整语言表，可以是一份或多份语言表。
-3. 从语言表本地提取候选术语。
-4. 只输出公告中实际出现的术语及译文。
-5. 输出列与语言表交付格式保持一致，常见为 `ID / CN / EN` 或 `ID / CN / EN / FR...`。
+3. 从语言表本地匹配官方完整句式，再提取候选术语和相似句证据。
+4. 只输出公告中实际出现的术语、官方句式及译文。
+5. `Glossary` 列与语言表交付格式保持一致；同一 Excel 的 `SentenceTemplates` 保存官方完整句式和相似句证据。
 6. 不把完整语言表交给模型。
+
+固定翻译优先级：
+
+1. 官方完整句式：匹配后只替换占位符或数值，固定措辞和大小写完整沿用。
+2. 官方相似句中的表达：只作上下文证据，不冒充完整官方译文。
+3. 单个术语：作为约束输入，不机械拼接整句。
+4. 模型自行翻译：只处理前三层未覆盖的内容。
+
+如果用户同时提供翻译成品，使用 `--translated-material LANG=path` 做官方句式沿用检查。当前策略为 warning-only：不一致时退出码仍为 0，但必须在控制台和校验报告中显示严重警告。没有译文输入时，状态必须写 `not_run`，不得声称通过。
 
 AI 补充规则：
 
@@ -216,7 +226,7 @@ AI 补充规则：
   - 有语言表译文证据
   - 置信度至少 medium
   - 有可追溯 ID 或句内证据
-- 主 Excel 保持干净，不写置信度、证据、来源列。
+- `Glossary` 保持干净，不写置信度、证据、来源列；官方句式证据只写 `SentenceTemplates`。
 - 验收报告默认不交付，只在最终回复说明命中数和风险。
 
 ## 9. 项目 brief 工作流
@@ -304,6 +314,9 @@ ID / CN / 目标语言主译 / 分类
 - 等级/颜色/投放批次配置名命中数为 0
 - 奖励/状态/说明短句命中数为 0，明确保留项除外
 - 新增项与原表 CN 重复数为 0
+- 公告文件存在 `SentenceTemplates`，且完整句式优先级为 1、相似句证据优先级为 2
+- 提供翻译成品时，读回检查 `official_template_mismatches` 和 `unverifiable_placeholders`
+- 未提供翻译成品时，确认 `official_template_qa: not_run`
 
 最终回复示例：
 
@@ -322,7 +335,7 @@ python -m pytest -q
 Harness 回归：
 
 ```bash
-python scripts/run_glossary_harness.py fixtures/core_regression.json fixtures/observation_feedback_regression.json fixtures/announcement_lookup_regression.json fixtures/announcement_ai_supplement_regression.json
+python scripts/run_glossary_harness.py fixtures/core_regression.json fixtures/observation_feedback_regression.json fixtures/announcement_lookup_regression.json fixtures/announcement_ai_supplement_regression.json fixtures/announcement_sentence_templates_regression.json
 ```
 
 文档交付前：
