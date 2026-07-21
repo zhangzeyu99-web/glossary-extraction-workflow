@@ -122,7 +122,8 @@ def announcement_candidate_rows_from_sheet_rows(
     for row_number, row in enumerate(rows[layout.header_row_index + 1 :], start=layout.header_row_index + 2):
         row_values = list(row)
         raw_source = value_at(row_values, layout.source_index)
-        row_id = "" if layout.id_index >= len(row_values) or row_values[layout.id_index] is None else str(row_values[layout.id_index])
+        raw_id = value_at(row_values, layout.id_index)
+        row_id = "" if raw_id is None else str(raw_id)
         if not row_id:
             row_id = f"{sheet_title}:{row_number}"
         raw_target = "" if layout.target_index is None else value_at(row_values, layout.target_index)
@@ -361,9 +362,10 @@ def build_multilingual_announcement_rows(
 ) -> tuple[list[dict[str, object]], dict[str, int]]:
     candidate_by_cn: dict[str, dict[str, object]] = {}
     translations_by_language: dict[str, dict[str, str]] = {spec.language: {} for spec in language_table_specs}
+    primary_terms: set[str] = set()
     duplicate_source_terms = 0
 
-    for spec in language_table_specs:
+    for spec_index, spec in enumerate(language_table_specs):
         _headers, candidate_rows = build_announcement_candidate_rows_from_workbook(
             input_path=spec.path,
             sheet_name=sheet_name,
@@ -378,6 +380,8 @@ def build_multilingual_announcement_rows(
             cn = clean_text(row.get("CN"))
             if not cn:
                 continue
+            if spec_index == 0:
+                primary_terms.add(cn)
             target = clean_text(row.get("EN")) or clean_text(row.get("EN2"))
             if target:
                 translations_by_language[spec.language][cn] = target
@@ -395,7 +399,7 @@ def build_multilingual_announcement_rows(
                     candidate["EN"] = target
 
     matched_terms = select_announcement_term_rows(
-        term_rows=list(candidate_by_cn.values()),
+        term_rows=[candidate_by_cn[cn] for cn in candidate_by_cn if cn in primary_terms],
         announcement_text=announcement_text,
         include_empty=include_empty,
     )
@@ -412,7 +416,7 @@ def build_multilingual_announcement_rows(
         rows.append(row)
 
     stats = {
-        "candidate_terms": len(candidate_by_cn),
+        "candidate_terms": len(primary_terms),
         "duplicate_source_terms": duplicate_source_terms,
     }
     return rows, stats

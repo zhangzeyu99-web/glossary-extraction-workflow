@@ -108,6 +108,20 @@ class SentenceTemplateMatchingTests(unittest.TestCase):
         self.assertEqual(exact["全队全属性+<@1>"]["translations"]["EN"], "Team All Stats +200")
         self.assertEqual(exact["自身增伤+<@2>%"]["translations"]["EN"], "DMG Boost +40%")
 
+    def test_multilingual_template_merge_can_require_the_primary_language(self):
+        module = sentence_templates_module()
+        candidates = [
+            {"ID": "EN1", "CN": "用于提升奇幻英雄的异能强度。", "translations": {"EN": "EN context"}},
+            {"ID": "TH1", "CN": "用于提升奇幻英雄的异能强度。", "translations": {"TH": "TH context"}},
+            {"ID": "TH2", "CN": "仅次要语言存在的完整句式。", "translations": {"TH": "TH only"}},
+        ]
+
+        merged = module.merge_sentence_template_candidates(candidates, required_language="EN")
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["ID"], "EN1")
+        self.assertEqual(merged[0]["translations"], {"EN": "EN context", "TH": "TH context"})
+
     def test_similar_official_sentence_is_evidence_not_rendered_translation(self):
         module = sentence_templates_module()
         matches = module.build_sentence_template_matches(
@@ -381,6 +395,70 @@ class SentenceTemplateCliTests(unittest.TestCase):
             workbook.close()
             self.assertEqual(rows[0][-2:], ("EN", "TH"))
             self.assertEqual(rows[1][-2:], ("DMG Boost +40%", "DMG INC ตัวเอง +40%"))
+
+    def test_multilingual_cli_reads_headerless_target_column_after_chinese_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            en_path = temp_path / "language_en.xlsx"
+            th_path = temp_path / "language_th.xlsx"
+            notice_path = temp_path / "notice.txt"
+            output_path = temp_path / "announcement_terms.xlsx"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            en_book = Workbook()
+            en_sheet = en_book.active
+            en_sheet.append(["ID", "CN", "EN"])
+            en_sheet.append(["6235", "自身增伤+<@1>%", "DMG Boost +<@1>%"])
+            en_sheet.append(["6720", "自身增伤", "Self DMG Boost"])
+            en_book.save(en_path)
+            en_book.close()
+
+            th_book = Workbook()
+            th_sheet = th_book.active
+            th_sheet.append(["中文key", None, None, None, None, "所属模块"])
+            for index in range(60):
+                th_sheet.append([f"待翻译文本{index}", None, None, None, None, "属性说明-TD"])
+            th_sheet.append(
+                ["自身增伤+<@1>%", "DMG INC ตัวเอง +<@1>%", None, None, None, "属性说明-TD"]
+            )
+            th_sheet.append(["自身增伤", "DMG INC ตัวเอง", None, None, None, "属性说明-TD"])
+            th_book.save(th_path)
+            th_book.close()
+            notice_path.write_text("皮肤属性：自身增伤+40%", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--language-table",
+                    f"EN={en_path}",
+                    "--language-table",
+                    f"TH={th_path}",
+                    "--announcement-material",
+                    str(notice_path),
+                    "--announcement-output",
+                    str(output_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            workbook = load_workbook(output_path, read_only=True, data_only=True)
+            glossary_rows = list(workbook["Glossary"].iter_rows(values_only=True))
+            template_rows = list(workbook["SentenceTemplates"].iter_rows(values_only=True))
+            workbook.close()
+            self.assertEqual(glossary_rows[0][-2:], ("EN", "TH"))
+            self.assertEqual(glossary_rows[1][-2:], ("Self DMG Boost", "DMG INC ตัวเอง"))
+            self.assertEqual(template_rows[0][-2:], ("EN", "TH"))
+            self.assertEqual(template_rows[1][-2:], ("DMG Boost +40%", "DMG INC ตัวเอง +40%"))
 
     def test_translated_material_enables_default_validation_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -569,7 +569,10 @@ def main(argv: list[str] | None = None) -> int:
                 source_only=args.source_only,
             )
             multilingual_template_candidates.extend(candidates)
-        sentence_template_candidates = merge_sentence_template_candidates(multilingual_template_candidates)
+        sentence_template_candidates = merge_sentence_template_candidates(
+            multilingual_template_candidates,
+            required_language=language_table_specs[0].language,
+        )
         announcement_rows, ai_supplement_report, sentence_template_matches, template_qa = run_announcement_glossary_outputs(
             parser=parser,
             args=args,

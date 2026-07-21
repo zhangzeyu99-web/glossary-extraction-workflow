@@ -534,7 +534,10 @@ def build_sentence_template_candidates_from_workbook(
     return languages, merge_sentence_template_candidates(candidates)
 
 
-def merge_sentence_template_candidates(candidate_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+def merge_sentence_template_candidates(
+    candidate_rows: list[dict[str, object]],
+    required_language: str | None = None,
+) -> list[dict[str, object]]:
     merged: dict[str, dict[str, object]] = {}
     order: list[str] = []
     for candidate in candidate_rows:
@@ -557,4 +560,13 @@ def merge_sentence_template_candidates(candidate_rows: list[dict[str, object]]) 
             for language, target in translations.items():
                 if raw_template_text(target) and language not in current_translations:
                     current_translations[str(language)] = raw_template_text(target)
-    return [merged[key] for key in order]
+    rows = [merged[key] for key in order]
+    required = raw_template_text(required_language).upper()
+    if not required:
+        return rows
+    return [
+        row
+        for row in rows
+        if isinstance(row.get("translations"), dict)
+        and raw_template_text(row["translations"].get(required))
+    ]
