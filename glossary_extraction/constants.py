@@ -93,6 +93,7 @@ RESOURCE_TERMS = {
     "礼包",
 }
 STAT_TERMS = {
+    "战力",
     "攻击",
     "攻击力",
     "防御",

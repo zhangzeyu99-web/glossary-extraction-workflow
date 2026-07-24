@@ -60,6 +60,28 @@ class UtilityTests(unittest.TestCase):
         self.assertTrue(MODULE.is_valid_term("\u9644\u9b54"))
         self.assertTrue(MODULE.is_valid_term("\u51b0\u5c01\u6269\u6563"))
 
+    def test_common_combat_power_term_remains_a_deliverable_attribute(self):
+        records = [
+            MODULE.Record(row_id="A-1", source="\u6218\u529b", target="S\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-2", source="\u63d0\u5347\u6218\u529b", target="T\u0103ng s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-3", source="\u6218\u529b\u5956\u52b1", target="Ph\u1ea7n th\u01b0\u1edfng s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-4", source="\u6218\u529b\u6392\u884c", target="X\u1ebfp h\u1ea1ng s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-5", source="\u6218\u529b\u7cfb\u7edf", target="H\u1ec7 th\u1ed1ng s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-6", source="\u6218\u529b\u5c5e\u6027", target="Thu\u1ed9c t\u00ednh s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-7", source="\u6218\u529b\u6210\u957f", target="T\u0103ng tr\u01b0\u1edfng s\u1ee9c m\u1ea1nh"),
+        ]
+
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=6,
+            include_empty_final_terms=True,
+            target_language="VN",
+        )
+
+        combat_power = next(row for row in final_rows if row["CN"] == "\u6218\u529b")
+        self.assertEqual(combat_power["Category"], "\u5c5e\u6027")
+
     def test_records_from_rows_preserves_term_type_context(self):
         rows = [
             ["ID", "中文", "英文", "术语类型"],
