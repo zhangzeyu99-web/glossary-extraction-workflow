@@ -60,6 +60,27 @@ class UtilityTests(unittest.TestCase):
         self.assertTrue(MODULE.is_valid_term("\u9644\u9b54"))
         self.assertTrue(MODULE.is_valid_term("\u51b0\u5c01\u6269\u6563"))
 
+    def test_records_from_rows_preserves_term_type_context(self):
+        rows = [
+            ["ID", "中文", "英文", "术语类型"],
+            ["SkillName_1001", "鲨潮护盾", "Sharkguard", "技能名"],
+            ["MapName_2001", "暮色海岸", "Dusk Coast", "地名"],
+        ]
+
+        records = MODULE.records_from_rows(
+            rows=rows,
+            sheet_title="技能与地图",
+            id_column="ID",
+            source_column="中文",
+            target_column="英文",
+        )
+
+        self.assertEqual(records[0].sheet_name, "技能与地图")
+        self.assertEqual(records[0].row_number, 2)
+        self.assertEqual(records[0].source_field, "中文")
+        self.assertEqual(records[0].term_type_hint, "技能名")
+        self.assertEqual(records[1].term_type_hint, "地名")
+
     def test_collect_translation_diff_marks_manual_adaptation(self):
         counter = MODULE.Counter(
             {

@@ -247,27 +247,43 @@ def extract_structured_term_pairs(raw_source: object, raw_target: object) -> lis
 
 
 def category_for(term: str) -> str:
-    if term in RARITY_TERMS:
+    if term in RARITY_TERMS or any(key in term for key in ("品质", "稀有度")):
         return "rarity"
     if term in RESOURCE_TERMS:
         return "resource"
-    if term in STAT_TERMS or term.endswith("伤害") or term.endswith("伤害+"):
+    if term in STAT_TERMS or any(key in term for key in ("伤害", "攻击", "生命", "防御", "暴击")):
         return "stat"
     if term in ACTION_TERMS:
         return "action"
+    if "活动" in term:
+        return "activity"
+    if any(key in term for key in ("邮件", "信件")):
+        return "mail"
+    if any(key in term for key in ("公会", "联盟")):
+        return "alliance"
+    if any(key in term for key in ("副本", "秘境")):
+        return "dungeon"
+    if any(key in term for key in ("英雄", "角色", "职业")):
+        return "hero"
+    if any(key in term for key in ("怪物", "首领", "BOSS", "Boss", "boss")):
+        return "monster"
+    if "宠物" in term:
+        return "pet"
+    if any(key in term for key in ("武器", "装备", "护甲")):
+        return "equipment"
+    if any(key in term for key in ("道具", "宝箱", "药水")):
+        return "item"
+    if "技能" in term:
+        return "skill"
+    if any(key in term for key in ("纹章", "铭文", "宝石")):
+        return "emblem"
     if term in SYSTEM_TERMS:
-        return "system"
+        return "ui"
     if term in OBJECT_TERMS:
-        return "object"
+        return "item"
     if term in STATUS_TERMS:
-        return "status"
-    if any(key in term for key in ("伤害", "攻击", "生命", "防御", "暴击")):
-        return "stat"
-    if any(key in term for key in ("公会", "竞技场", "战令", "签到", "商城", "商店", "基地", "防御塔", "活动")):
-        return "system"
-    if any(key in term for key in ("英雄", "技能", "装备", "建筑", "武器", "坐骑")):
-        return "object"
-    return "other"
+        return "ui"
+    return "needs_review"
 
 
 def join_counter(counter: Counter[str], limit: int = 5) -> str:

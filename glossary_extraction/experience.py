@@ -47,6 +47,7 @@ def split_legacy_term_memory(memory: dict[str, Any] | None) -> tuple[dict[str, A
             "ignore": bool(raw_state.get("ignore")),
             "note": clean_text(raw_state.get("note")),
             "category_override": clean_text(raw_state.get("category_override")),
+            "term_type_override": clean_text(raw_state.get("term_type_override")),
         }
         observation_state = {
             "observed_exact_candidates": counter_to_dict(dict_to_counter(raw_state.get("observed_exact_candidates"))),
@@ -64,6 +65,7 @@ def split_legacy_term_memory(memory: dict[str, Any] | None) -> tuple[dict[str, A
                 curated_state["ignore"],
                 curated_state["note"],
                 curated_state["category_override"],
+                curated_state["term_type_override"],
             ]
         ):
             curated["terms"][term] = curated_state
@@ -112,6 +114,7 @@ def default_curated_term_state() -> dict[str, Any]:
         "ignore": False,
         "note": "",
         "category_override": "",
+        "term_type_override": "",
     }
 
 
@@ -136,6 +139,7 @@ def get_curated_term_state(curated_rules: dict[str, Any], term: str, *, create: 
             "ignore": bool(state.get("ignore")),
             "note": clean_text(state.get("note")),
             "category_override": clean_text(state.get("category_override")),
+            "term_type_override": clean_text(state.get("term_type_override")),
         }
     )
     state = defaults
@@ -173,6 +177,7 @@ def sanitize_curated_rules(payload: dict[str, Any] | None) -> dict[str, Any]:
             state["ignore"] = bool(raw.get("ignore"))
             state["note"] = clean_text(raw.get("note"))
             state["category_override"] = clean_text(raw.get("category_override"))
+            state["term_type_override"] = clean_text(raw.get("term_type_override"))
     return curated
 
 
@@ -222,7 +227,12 @@ def load_observation_store(path: Path | None) -> dict[str, Any]:
     payload = load_json_object(path)
     if payload:
         if any(
-            isinstance(state, dict) and any(key.startswith("approved_") or key in {"block_en2", "ignore", "note", "category_override"} for key in state.keys())
+            isinstance(state, dict)
+            and any(
+                key.startswith("approved_")
+                or key in {"block_en2", "ignore", "note", "category_override", "term_type_override"}
+                for key in state.keys()
+            )
             for state in payload.get("terms", {}).values()
         ):
             _legacy_curated, legacy_observations = split_legacy_term_memory(payload)
