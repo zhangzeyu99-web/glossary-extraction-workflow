@@ -886,11 +886,12 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
             final_workbook = load_workbook(final_path, read_only=True, data_only=True)
             rows = list(final_workbook["Glossary"].iter_rows(values_only=True))
+            final_workbook.close()
             lookup = {row[1]: row for row in rows[1:]}
+            self.assertEqual(rows[0], ("ID", "CN", "EN", "分类"))
             self.assertIn("奖励", lookup)
             self.assertEqual(lookup["奖励"][2], None)
-            self.assertEqual(lookup["奖励"][3], None)
-            final_workbook.close()
+            self.assertEqual(lookup["奖励"][3], "资源")
 
     def test_cli_generates_detail_final_and_store_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -992,12 +993,14 @@ class CliIntegrationTests(unittest.TestCase):
             final_workbook = load_workbook(final_path, read_only=True, data_only=True)
             glossary_sheet = final_workbook["Glossary"]
             rows = list(glossary_sheet.iter_rows(values_only=True))
-            lookup = {row[1]: row for row in rows[1:]}
-            self.assertEqual(lookup["报名"][2], "Registration")
-            self.assertEqual(lookup["报名"][3], "Sign Up")
-            self.assertEqual(lookup["升级"][2], "Level Up")
-            self.assertEqual(lookup["升级"][3], "Upgrade")
             final_workbook.close()
+            lookup = {row[1]: row for row in rows[1:]}
+            self.assertEqual(rows[0], ("ID", "CN", "EN", "分类"))
+            self.assertEqual(lookup["报名"][2], "Registration")
+            self.assertEqual(lookup["报名"][3], "动作")
+            self.assertEqual(lookup["升级"][2], "Level Up")
+            self.assertEqual(lookup["升级"][3], "动作")
+            self.assertIn("DELIVERY_HARD_BLOCKERS=0", result.stdout)
 
     def test_cli_generates_announcement_term_workbook(self):
         with tempfile.TemporaryDirectory() as temp_dir:

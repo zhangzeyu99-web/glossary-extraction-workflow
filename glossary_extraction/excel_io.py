@@ -777,33 +777,27 @@ def write_detail_workbook(
     workbook.close()
 
 
-def write_final_workbook(output_path: Path, final_rows: list[dict[str, object]]) -> None:
+def write_final_workbook(
+    output_path: Path,
+    final_rows: list[dict[str, object]],
+    target_header: str = "EN",
+    include_en2: bool = False,
+) -> None:
     workbook = Workbook()
-
-    glossary_sheet = workbook.active
-    glossary_sheet.title = "Glossary"
-    final_headers = ["ID", "CN", "EN", "EN2"]
-    glossary_sheet.append(final_headers)
+    worksheet = workbook.active
+    worksheet.title = "Glossary"
+    headers = ["ID", "CN", target_header]
+    if include_en2:
+        headers.append("EN2")
+    headers.append("分类")
+    worksheet.append(headers)
     for row in final_rows:
-        glossary_sheet.append([row.get(header, "") for header in final_headers])
-    style_sheet(glossary_sheet)
-
-    detail_sheet = workbook.create_sheet("Buckets")
-    detail_headers = ["ID", "CN", "EN", "EN2", "ExampleUsages", "ManualAdaptations", "Note"]
-    detail_sheet.append(detail_headers)
-    for row in final_rows:
-        detail_sheet.append([row.get(header, "") for header in detail_headers])
-    style_sheet(detail_sheet)
-
-    notes_sheet = workbook.create_sheet("Notes")
-    notes_sheet.append(["Item", "Value"])
-    for item, value in [
-        ("Columns", "ID = text id, CN = source term, EN = example English, EN2 = manual adaptation English"),
-        ("Rule", "EN2 remains blank when the alternative wording is not stable enough or is explicitly blocked by curated rules."),
-        ("RowCount", len(final_rows)),
-    ]:
-        notes_sheet.append([item, value])
-    style_sheet(notes_sheet)
+        values = [row.get("ID", ""), row.get("CN", ""), row.get("EN", "")]
+        if include_en2:
+            values.append(row.get("EN2", ""))
+        values.append(row.get("Category", ""))
+        worksheet.append(values)
+    style_sheet(worksheet)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
