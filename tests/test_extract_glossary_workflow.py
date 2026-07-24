@@ -838,6 +838,123 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertTrue(packet_path.exists())
             self.assertFalse(final_path.exists())
 
+    def test_cli_proper_name_end_to_end_blocks_collision_then_passes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "proper_names.xlsx"
+            detail_path = temp_path / "detail.xlsx"
+            final_path = temp_path / "final.xlsx"
+            packet_path = temp_path / "name_review.json"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "名称"
+            worksheet.append(["ID", "cn", "en", "术语类型"])
+            worksheet.append(["SkillName_1001", "鲨潮护盾", "Sharkguard", "技能名"])
+            worksheet.append(
+                [
+                    "SkillDesc_1001",
+                    "召唤鲨潮并获得护盾",
+                    "Summons a shark tide and gains a shield.",
+                    "",
+                ]
+            )
+            worksheet.append(["SkillName_1002", "鲨卫", "Sharkguard", "技能名"])
+            worksheet.append(["MapName_2001", "暮色海岸", "Dusk Coast", "地名"])
+            worksheet.append(["Text_1", "终极挑战", "Final Challenge", ""])
+            workbook.save(input_path)
+            workbook.close()
+
+            curated_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "terms": {
+                            "鲨潮护盾": {
+                                "approved_en": "Megalodon Water Shield",
+                                "approved_en2": "",
+                                "block_en2": True,
+                                "ignore": False,
+                                "note": "",
+                                "category_override": "",
+                                "term_type_override": "ui_skill_name",
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            args = [
+                sys.executable,
+                str(SCRIPT_PATH),
+                str(input_path),
+                "--output",
+                str(detail_path),
+                "--final-output",
+                str(final_path),
+                "--curated-rules",
+                str(curated_path),
+                "--observations-store",
+                str(observations_path),
+                "--min-hit",
+                "5",
+                "--glossary-hit-threshold",
+                "10",
+                "--target-language",
+                "EN",
+                "--name-review-packet-output",
+                str(packet_path),
+                "--no-project-brief",
+            ]
+
+            blocked = subprocess.run(
+                args,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(blocked.returncode, 2, msg=blocked.stderr or blocked.stdout)
+            self.assertIn("delivery_hard_blockers: 1", blocked.stdout)
+
+            workbook = load_workbook(input_path)
+            workbook["名称"]["C4"] = "Shark Ward"
+            workbook.save(input_path)
+            workbook.close()
+
+            passed = subprocess.run(
+                args,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(passed.returncode, 0, msg=passed.stderr or passed.stdout)
+
+            final_workbook = load_workbook(final_path, read_only=True, data_only=True)
+            self.assertEqual(final_workbook.sheetnames, ["Glossary"])
+            rows = list(final_workbook["Glossary"].iter_rows(values_only=True))
+            self.assertEqual(rows[0], ("ID", "CN", "EN", "分类"))
+            lookup = {row[1]: row for row in rows[1:]}
+            self.assertEqual(lookup["鲨潮护盾"][2], "Sharkguard")
+            self.assertEqual(lookup["鲨潮护盾"][3], "技能名")
+            self.assertEqual(lookup["暮色海岸"][3], "地名")
+            self.assertNotIn("终极挑战", lookup)
+            final_workbook.close()
+
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                {item["CN"] for item in packet["candidates"]},
+                {"鲨潮护盾", "鲨卫", "暮色海岸"},
+            )
+            self.assertNotIn("召唤鲨潮并获得护盾", packet_path.read_text(encoding="utf-8"))
+
     def test_cli_can_generate_source_only_final_terms(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
