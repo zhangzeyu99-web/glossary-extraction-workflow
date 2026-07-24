@@ -81,6 +81,69 @@ class UtilityTests(unittest.TestCase):
         self.assertEqual(records[0].term_type_hint, "技能名")
         self.assertEqual(records[1].term_type_hint, "地名")
 
+    def test_singleton_proper_names_bypass_frequency_threshold(self):
+        records = [
+            MODULE.Record(
+                "SkillName_1001",
+                "鲨潮护盾",
+                "Sharkguard",
+                sheet_name="技能名称",
+                row_number=2,
+            ),
+            MODULE.Record(
+                "MapName_2001",
+                "暮色海岸",
+                "Dusk Coast",
+                sheet_name="地图名称",
+                row_number=3,
+            ),
+            MODULE.Record("Text_1", "普通文本", "Normal Text"),
+        ]
+
+        all_rows, glossary_rows, high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=10,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="singleton-proper-names",
+        )
+
+        final = {row["CN"]: row for row in final_rows}
+        self.assertEqual(final["鲨潮护盾"]["Category"], "技能名")
+        self.assertEqual(final["鲨潮护盾"]["HitRows"], 1)
+        self.assertEqual(final["暮色海岸"]["Category"], "地名")
+        self.assertNotIn("普通文本", final)
+        self.assertFalse(any(row["CN"] == "普通文本" for row in glossary_rows))
+        self.assertFalse(any(row["CN"] == "普通文本" for row in high_risk_rows))
+        self.assertTrue(any(row["CN"] == "鲨潮护盾" for row in all_rows))
+
+    def test_conflicting_name_type_stays_in_review_only(self):
+        records = [
+            MODULE.Record(
+                "MapName_2001",
+                "暮色海岸",
+                "Dusk Coast",
+                sheet_name="地图",
+                term_type_hint="技能名",
+            )
+        ]
+
+        all_rows, glossary_rows, high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=10,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="conflicting-name-type",
+        )
+
+        self.assertEqual(all_rows[0]["NeedsReview"], "Yes")
+        self.assertEqual(all_rows[0]["Category"], "待确认")
+        self.assertEqual(high_risk_rows[0]["CN"], "暮色海岸")
+        self.assertEqual(glossary_rows, [])
+        self.assertEqual(final_rows, [])
+
     def test_collect_translation_diff_marks_manual_adaptation(self):
         counter = MODULE.Counter(
             {
