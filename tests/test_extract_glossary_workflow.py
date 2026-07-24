@@ -144,6 +144,52 @@ class UtilityTests(unittest.TestCase):
         self.assertEqual(glossary_rows, [])
         self.assertEqual(final_rows, [])
 
+    def test_name_budget_warning_does_not_remove_proper_name(self):
+        records = [
+            MODULE.Record(
+                "SkillName_1001",
+                "巨齿鲨水盾",
+                "Megalodon Water Shield",
+                term_type_hint="技能名",
+            )
+        ]
+
+        all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=10,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="name-budget-warning",
+            target_language="EN",
+        )
+
+        self.assertEqual(all_rows[0]["NameWordCount"], 3)
+        self.assertIn("english_skill_word_budget", all_rows[0]["NamePolicyWarnings"])
+        self.assertEqual(final_rows[0]["CN"], "巨齿鲨水盾")
+
+    def test_name_collision_is_high_risk_and_excluded_from_delivery(self):
+        records = [
+            MODULE.Record("SkillName_1001", "鲨潮护盾", "Sharkguard", term_type_hint="技能名"),
+            MODULE.Record("SkillName_1002", "鲨卫", "Sharkguard", term_type_hint="技能名"),
+        ]
+
+        all_rows, glossary_rows, high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=10,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="name-collision",
+            target_language="EN",
+        )
+
+        self.assertTrue(all(row["NameCollision"] == "Yes" for row in all_rows))
+        self.assertTrue(all("鲨" in row["NameCollisionWith"] for row in all_rows))
+        self.assertEqual({row["CN"] for row in high_risk_rows}, {"鲨潮护盾", "鲨卫"})
+        self.assertEqual(glossary_rows, [])
+        self.assertEqual(final_rows, [])
+
     def test_collect_translation_diff_marks_manual_adaptation(self):
         counter = MODULE.Counter(
             {
@@ -682,6 +728,116 @@ class MemoryTests(unittest.TestCase):
 
 
 class CliIntegrationTests(unittest.TestCase):
+    def test_cli_writes_compact_name_review_packet(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "proper_names.xlsx"
+            detail_path = temp_path / "detail.xlsx"
+            final_path = temp_path / "final.xlsx"
+            packet_path = temp_path / "name_review.json"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Names"
+            worksheet.append(["ID", "cn", "en", "术语类型"])
+            worksheet.append(["Name_1001", "巨齿鲨水盾", "Megalodon Water Shield", "技能名"])
+            worksheet.append(["Text_1", "普通文本", "Normal Text", ""])
+            workbook.save(input_path)
+            workbook.close()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--output",
+                    str(detail_path),
+                    "--final-output",
+                    str(final_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--min-hit",
+                    "5",
+                    "--glossary-hit-threshold",
+                    "10",
+                    "--target-language",
+                    "EN",
+                    "--name-review-packet-output",
+                    str(packet_path),
+                    "--no-project-brief",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            self.assertEqual([row["CN"] for row in packet["candidates"]], ["巨齿鲨水盾"])
+            self.assertNotIn("普通文本", packet_path.read_text(encoding="utf-8"))
+            self.assertIn("english_skill_word_budget", packet["candidates"][0]["warnings"])
+
+    def test_cli_blocks_project_name_collision_before_final_delivery(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "colliding_names.xlsx"
+            detail_path = temp_path / "detail.xlsx"
+            final_path = temp_path / "final.xlsx"
+            packet_path = temp_path / "name_review.json"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Names"
+            worksheet.append(["ID", "cn", "en", "术语类型"])
+            worksheet.append(["Name_1001", "鲨潮护盾", "Sharkguard", "技能名"])
+            worksheet.append(["Name_1002", "鲨卫", "Sharkguard", "技能名"])
+            workbook.save(input_path)
+            workbook.close()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--output",
+                    str(detail_path),
+                    "--final-output",
+                    str(final_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--min-hit",
+                    "5",
+                    "--glossary-hit-threshold",
+                    "10",
+                    "--target-language",
+                    "EN",
+                    "--name-review-packet-output",
+                    str(packet_path),
+                    "--no-project-brief",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 2, msg=result.stderr or result.stdout)
+            self.assertIn("delivery_hard_blockers: 1", result.stdout)
+            self.assertTrue(detail_path.exists())
+            self.assertTrue(packet_path.exists())
+            self.assertFalse(final_path.exists())
+
     def test_cli_can_generate_source_only_final_terms(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

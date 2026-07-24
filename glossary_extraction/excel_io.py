@@ -698,6 +698,9 @@ def write_detail_workbook(
         "EN",
         "EN2",
         "SuggestedEN",
+        "TranslationSource",
+        "TranslationConflict",
+        "TranslationConflictValues",
         "ExactCandidates",
         "ExampleUsages",
         "ManualAdaptations",
@@ -708,6 +711,16 @@ def write_detail_workbook(
         "SameOrFormatOnlyCount",
         "DiffCount",
         "Category",
+        "TermType",
+        "TypeConfidence",
+        "TypeEvidence",
+        "NeedsReview",
+        "NameWordCount",
+        "NameCoreWordCount",
+        "NameCharCount",
+        "NamePolicyWarnings",
+        "NameCollision",
+        "NameCollisionWith",
         "Risk",
         "Priority",
         "HitRows",
@@ -733,6 +746,13 @@ def write_detail_workbook(
 
     all_sheet = workbook.create_sheet("Candidates")
     append_rows(all_sheet, headers, all_rows)
+
+    name_review_sheet = workbook.create_sheet("NameReview")
+    append_rows(
+        name_review_sheet,
+        headers,
+        [row for row in all_rows if row.get("TermType") in {"ui_skill_name", "location_name"}],
+    )
 
     notes_sheet = workbook.create_sheet("Notes")
     notes_sheet.append(["Item", "Value"])

@@ -33,7 +33,13 @@ from glossary_extraction.constants import (
     SYSTEM_TERMS,
 )
 from glossary_extraction.models import Record
-from glossary_extraction.name_policy import PROPER_NAME_TYPES, classify_term_type
+from glossary_extraction.name_policy import (
+    PROPER_NAME_TYPES,
+    assess_name_translation,
+    classify_term_type,
+    find_name_collisions,
+    normalized_name,
+)
 
 
 def clean_text(value: object) -> str:
@@ -374,6 +380,7 @@ def build_term_rows(
     observations_store: dict[str, Any] | None = None,
     input_digest: str = "",
     include_empty_final_terms: bool = False,
+    target_language: str = "EN",
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     curated_rules = curated_rules if curated_rules is not None else experience.new_curated_rules()
     observations_store = observations_store if observations_store is not None else experience.new_observation_store()
@@ -509,6 +516,11 @@ def build_term_rows(
         )
         if clean_text(curated_state.get("note")):
             note = f"{note}; {clean_text(curated_state.get('note'))}" if note else clean_text(curated_state.get("note"))
+        name_policy = assess_name_translation(
+            term_type=type_decision.term_type,
+            translation=example_en,
+            language=target_language,
+        )
 
         row = {
             "ID": example_record.row_id if example_record else "",
@@ -533,6 +545,12 @@ def build_term_rows(
             "TypeConfidence": type_decision.confidence,
             "TypeEvidence": " | ".join(type_decision.evidence),
             "NeedsReview": "Yes" if needs_review else "No",
+            "NameWordCount": name_policy.word_count,
+            "NameCoreWordCount": name_policy.core_word_count,
+            "NameCharCount": name_policy.char_count,
+            "NamePolicyWarnings": " | ".join(name_policy.warnings),
+            "NameCollision": "No",
+            "NameCollisionWith": "",
             "Risk": risk,
             "Priority": priority_for(risk, hits),
             "HitRows": hits,
@@ -548,6 +566,16 @@ def build_term_rows(
         if not curated_state.get("ignore"):
             rows_by_term.append(row)
 
+    collisions = find_name_collisions(rows_by_term, curated_rules)
+    for row in rows_by_term:
+        collision_cn_values = collisions.get(normalized_name(row.get("EN")), [])
+        if len(collision_cn_values) <= 1:
+            continue
+        row["NameCollision"] = "Yes"
+        row["NameCollisionWith"] = " | ".join(collision_cn_values)
+        row["Risk"] = "high"
+        row["Priority"] = priority_for("high", int(row["HitRows"]))
+
     rows_by_term.sort(
         key=lambda row: (
             {"P1": 0, "P2": 1, "P3": 2}[row["Priority"]],
@@ -561,6 +589,7 @@ def build_term_rows(
         row
         for row in rows_by_term
         if row["NeedsReview"] != "Yes"
+        and row["NameCollision"] != "Yes"
         and (
             int(row["HitRows"]) >= glossary_hit_threshold
             or row["Risk"] == "high"
