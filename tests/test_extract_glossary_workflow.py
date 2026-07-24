@@ -428,6 +428,27 @@ class UtilityTests(unittest.TestCase):
 
             self.assertIn("新增纹章系统", text)
 
+    def test_announcement_candidate_prefers_current_language_table_translation(self):
+        curated = {
+            "version": 1,
+            "terms": {
+                "报名": {
+                    "approved_en": "Registration",
+                    "approved_en2": "",
+                    "block_en2": True,
+                    "ignore": False,
+                    "note": "",
+                }
+            },
+        }
+        rows = MODULE.build_announcement_candidate_rows(
+            records=[MODULE.Record("1", "报名", "Sign Up")],
+            curated_rules=curated,
+            min_hit=1,
+        )
+
+        self.assertEqual(rows[0]["EN"], "Sign Up")
+
 
 class MemoryTests(unittest.TestCase):
     def test_preferences_can_block_en2_and_accumulate_observations(self):
@@ -464,14 +485,14 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(state["seen_runs"], 1)
         self.assertIn("Reward", state["observed_exact_candidates"])
 
-    def test_curated_rules_can_override_en_and_en2(self):
+    def test_current_language_table_translation_wins_over_curated(self):
         curated = {
             "version": 1,
             "terms": {
                 "报名": {
                     "approved_en": "Registration",
-                    "approved_en2": "Sign Up",
-                    "block_en2": False,
+                    "approved_en2": "",
+                    "block_en2": True,
                     "ignore": False,
                     "note": ""
                 }
@@ -490,8 +511,63 @@ class MemoryTests(unittest.TestCase):
             input_digest="fixture-2",
         )
         row = {item["CN"]: item for item in final_rows}["报名"]
-        self.assertEqual(row["EN"], "Registration")
-        self.assertEqual(row["EN2"], "Sign Up")
+        self.assertEqual(row["EN"], "Sign Up")
+        self.assertEqual(row["TranslationSource"], "current_table")
+        self.assertEqual(row["TranslationConflict"], "Yes")
+        self.assertIn("Registration", row["TranslationConflictValues"])
+
+    def test_curated_translation_only_fills_blank_current_translation(self):
+        curated = {
+            "version": 1,
+            "terms": {
+                "报名": {
+                    "approved_en": "Registration",
+                    "approved_en2": "",
+                    "block_en2": True,
+                    "ignore": False,
+                    "note": "",
+                }
+            },
+        }
+        records = [MODULE.Record("1", "报名", "")]
+
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=curated,
+            observations_store=MODULE.new_observation_store(),
+            input_digest="curated-fills-blank",
+            include_empty_final_terms=True,
+        )
+
+        self.assertEqual(final_rows[0]["EN"], "Registration")
+        self.assertEqual(final_rows[0]["TranslationSource"], "curated")
+        self.assertEqual(final_rows[0]["TranslationConflict"], "No")
+
+    def test_observation_history_cannot_override_current_translation(self):
+        observations = MODULE.new_observation_store()
+        observations["terms"]["报名"] = {
+            "observed_exact_candidates": {"Registration": 8},
+            "observed_example_usages": {},
+            "observed_manual_adaptations": {},
+            "seen_runs": 4,
+            "last_seen_at": "2026-07-01T00:00:00+00:00",
+            "last_input_digest": "old",
+        }
+        records = [MODULE.Record("1", "报名", "Sign Up")]
+
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=observations,
+            input_digest="current-run",
+        )
+
+        self.assertEqual(final_rows[0]["EN"], "Sign Up")
+        self.assertEqual(final_rows[0]["TranslationSource"], "current_table")
 
     def test_curated_and_observation_stores_roundtrip(self):
         with tempfile.TemporaryDirectory() as temp_dir:

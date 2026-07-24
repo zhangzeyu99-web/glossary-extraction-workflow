@@ -412,11 +412,17 @@ def build_term_rows(
         if hits < min_hit and not type_decision.bypass_frequency and not type_decision.needs_review:
             continue
 
-        exact_translations = label_translations.get(term, Counter())
-        suggested_en = exact_translations.most_common(1)[0][0] if exact_translations else (
+        current_exact_translations = label_translations.get(term, Counter()).copy()
+        primary_en, translation_source, translation_conflicts = experience.choose_primary_translation(
+            current_counter=current_exact_translations,
+            curated_state=curated_state,
+        )
+        suggested_en = primary_en or (
             near_translations.most_common(1)[0][0] if near_translations else ""
         )
-        example_en = example_record.target if example_record and example_record.target else suggested_en
+        example_en = primary_en or (
+            example_record.target if example_record and example_record.target else suggested_en
+        )
 
         actual_short_counter: Counter[str] = Counter()
         diff_sample: Record | None = None
@@ -437,7 +443,7 @@ def build_term_rows(
         exact_diff_counter = Counter(
             {
                 text: count
-                for text, count in exact_translations.items()
+                for text, count in current_exact_translations.items()
                 if not is_same_or_extended_usage(example_en=example_en, actual_en=text)
             }
         )
@@ -447,10 +453,12 @@ def build_term_rows(
             manual_counter=manual_adaptation_counter,
         )
 
+        current_example_usage_counter = example_usage_counter.copy()
+        current_manual_adaptation_counter = manual_adaptation_counter.copy()
         observation_state = experience.get_observation_term_state(observations_store, term)
         exact_translations, example_usage_counter, manual_adaptation_counter = experience.apply_observation_history(
             observation_state=observation_state,
-            exact_translation_counter=exact_translations,
+            exact_translation_counter=current_exact_translations,
             example_usage_counter=example_usage_counter,
             manual_adaptation_counter=manual_adaptation_counter,
         )
@@ -470,15 +478,13 @@ def build_term_rows(
             example_en = suggested_en
         if not suggested_en:
             suggested_en = example_en
-        if not example_en and exact_translations:
-            example_en = exact_translations.most_common(1)[0][0]
 
         experience.update_observation_store(
             observation_state,
             input_digest=input_digest,
-            exact_translation_counter=exact_translations,
-            example_usage_counter=example_usage_counter,
-            manual_adaptation_counter=manual_adaptation_counter,
+            exact_translation_counter=current_exact_translations,
+            example_usage_counter=current_example_usage_counter,
+            manual_adaptation_counter=current_manual_adaptation_counter,
         )
 
         diff_info = collect_translation_diff(example_en=example_en, actual_counter=actual_short_counter)
@@ -510,6 +516,9 @@ def build_term_rows(
             "EN": example_en,
             "EN2": en2_value,
             "SuggestedEN": suggested_en,
+            "TranslationSource": translation_source,
+            "TranslationConflict": "Yes" if translation_conflicts else "No",
+            "TranslationConflictValues": " | ".join(translation_conflicts),
             "ExactCandidates": join_counter(exact_translations or near_translations),
             "ExampleUsages": join_counter(example_usage_counter, limit=8),
             "ManualAdaptations": join_counter(manual_adaptation_counter, limit=8),

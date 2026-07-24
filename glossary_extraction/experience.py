@@ -284,6 +284,20 @@ def apply_observation_history(
     )
 
 
+def choose_primary_translation(
+    current_counter: Counter[str],
+    curated_state: dict[str, Any],
+) -> tuple[str, str, list[str]]:
+    current = current_counter.most_common(1)[0][0] if current_counter else ""
+    approved = clean_text(curated_state.get("approved_en"))
+    conflicts = [approved] if current and approved and approved != current else []
+    if current:
+        return current, "current_table", conflicts
+    if approved:
+        return approved, "curated", []
+    return "", "none", []
+
+
 def apply_curated_preferences(
     curated_state: dict[str, Any],
     term: str,
@@ -294,16 +308,8 @@ def apply_curated_preferences(
     example_usage_counter: Counter[str],
     manual_adaptation_counter: Counter[str],
 ) -> tuple[str, str, str, Counter[str], Counter[str], Counter[str]]:
-    approved_en = clean_text(curated_state.get("approved_en"))
     approved_en2 = clean_text(curated_state.get("approved_en2"))
     block_en2 = bool(curated_state.get("block_en2"))
-
-    if approved_en:
-        suggested_en = approved_en
-        example_en = approved_en
-    elif not example_en and exact_translation_counter:
-        example_en = exact_translation_counter.most_common(1)[0][0]
-        suggested_en = example_en
 
     if approved_en2:
         en2_value = approved_en2
